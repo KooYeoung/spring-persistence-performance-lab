@@ -9,6 +9,55 @@ latest_run_dir() {
   find "$RESULT_ROOT_ABS" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1
 }
 
+write_validated_stats_file() {
+  local official_dir="$1"
+  local stats_file="$2"
+  local official_files=()
+  local file
+  local path
+  local jpa_count=0
+  local jdbc_count=0
+
+  shopt -s nullglob
+  official_files=("$official_dir"/*.json)
+  shopt -u nullglob
+
+  [[ "${#official_files[@]}" -eq 12 ]] || die "official JSON 파일 수가 정확히 12개가 아닙니다: ${#official_files[@]}"
+
+  for file in "${official_files[@]}"; do
+    jq -e --argjson expected_count "$EXPECTED_INPUT_COUNT" '
+      type == "object"
+      and (.valid == true)
+      and ((.path == "jpa") or (.path == "jdbc"))
+      and ((.inputCount | type == "number") and (.inputCount == $expected_count))
+      and ((.savedCount | type == "number") and (.savedCount == $expected_count))
+      and ((.rowCount | type == "number") and (.rowCount == $expected_count))
+      and ((.elapsedNanos | type == "number") and (.elapsedNanos > 0))
+      and ((.missingKeyCount | type == "number") and (.missingKeyCount == 0))
+      and ((.unexpectedKeyCount | type == "number") and (.unexpectedKeyCount == 0))
+      and ((.duplicateKeyCount | type == "number") and (.duplicateKeyCount == 0))
+      and ((.expectedChecksum | type == "string") and (.expectedChecksum | test("^[0-9a-f]{64}$")))
+      and ((.actualChecksum | type == "string") and (.actualChecksum | test("^[0-9a-f]{64}$")))
+      and (.expectedChecksum == .actualChecksum)
+    ' "$file" >/dev/null || die "official JSON gate를 통과하지 못했습니다: $file"
+
+    path="$(jq -r '.path' "$file")"
+    case "$path" in
+      jpa) ((jpa_count += 1)) ;;
+      jdbc) ((jdbc_count += 1)) ;;
+      *) die "허용되지 않은 path입니다: $path" ;;
+    esac
+  done
+
+  [[ "$jpa_count" -eq 6 ]] || die "JPA official valid result count가 6개가 아닙니다: $jpa_count"
+  [[ "$jdbc_count" -eq 6 ]] || die "JDBC official valid result count가 6개가 아닙니다: $jdbc_count"
+
+  : >"$stats_file"
+  for file in "${official_files[@]}"; do
+    jq -r '[.path, .inputCount, .elapsedNanos] | @tsv' "$file" >>"$stats_file"
+  done
+}
+
 main() {
   require_command jq
   require_command awk
@@ -25,7 +74,7 @@ main() {
   local summary_file="$run_dir/summary.md"
   local stats_file="$run_dir/official/.stats.tsv"
 
-  jq -r 'select(.valid == true) | [.path, .inputCount, .elapsedNanos] | @tsv' "$run_dir"/official/*.json >"$stats_file"
+  write_validated_stats_file "$run_dir/official" "$stats_file"
 
   LC_ALL=C awk -v summary_file="$summary_file" '
     function add(path, input_count, elapsed) {

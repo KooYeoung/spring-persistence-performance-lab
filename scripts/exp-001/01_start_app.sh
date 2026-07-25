@@ -8,9 +8,11 @@ source "$SCRIPT_DIR/lib/common.sh"
 main() {
   require_command bash
   require_command java
+  require_command jps
   require_command curl
   assert_project_root
   ensure_directories
+  [[ "$SPRING_PROFILE" == "exp001" ]] || die "EXP-001 application은 exp001 profile로만 시작할 수 있습니다: $SPRING_PROFILE"
 
   if [[ -f "$EXP001_PID_FILE" ]]; then
     local existing_pid
@@ -18,7 +20,7 @@ main() {
     if [[ "$existing_pid" != "" ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
       die "이미 실행 중인 application PID가 있습니다: $existing_pid"
     fi
-    rm -f "$EXP001_PID_FILE"
+    clear_app_state
   fi
 
   local current_status
@@ -33,6 +35,7 @@ main() {
   local boot_jar
   boot_jar="$(find "$PROJECT_ROOT_ABS/build/libs" -maxdepth 1 -type f -name "*.jar" ! -name "*plain.jar" | sort | tail -n 1)"
   [[ "$boot_jar" != "" ]] || die "실행 가능한 boot jar를 찾지 못했습니다."
+  boot_jar="$(cd "$(dirname "$boot_jar")" && pwd -P)/$(basename "$boot_jar")"
 
   local server_port
   server_port="$(configured_server_port)"
@@ -53,6 +56,7 @@ main() {
 
   local pid
   pid="$(cat "$EXP001_PID_FILE")"
+  write_app_metadata "$pid" "$boot_jar" "$SPRING_PROFILE"
   log "application PID: $pid"
 
   local deadline=$((SECONDS + 120))
@@ -62,6 +66,7 @@ main() {
       return
     fi
     if ! kill -0 "$pid" >/dev/null 2>&1; then
+      clear_app_state
       die "application process가 시작 중 종료되었습니다. log를 확인하세요: $EXP001_APP_LOG"
     fi
     sleep 2

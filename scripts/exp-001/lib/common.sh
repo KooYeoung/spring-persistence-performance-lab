@@ -30,6 +30,7 @@ PROJECT_ROOT_ABS="$(cd "$EXP001_SCRIPT_DIR/$PROJECT_ROOT" && pwd -P)"
 RESULT_ROOT_ABS="$PROJECT_ROOT_ABS/$RESULT_ROOT"
 EXP001_STATE_DIR="$EXP001_SCRIPT_DIR/.state"
 EXP001_PID_FILE="$EXP001_STATE_DIR/app.pid"
+EXP001_APP_METADATA_FILE="$EXP001_STATE_DIR/application.metadata"
 EXP001_APP_LOG="$EXP001_STATE_DIR/application.log"
 
 timestamp() {
@@ -152,6 +153,55 @@ reset_benchmark_table() {
   psql_exec "TRUNCATE TABLE benchmark_record RESTART IDENTITY;"
 }
 
+write_app_metadata() {
+  local pid="$1"
+  local boot_jar="$2"
+  local profile="$3"
+
+  {
+    printf 'PID=%s\n' "$pid"
+    printf 'BOOT_JAR=%s\n' "$boot_jar"
+    printf 'BOOT_JAR_NAME=%s\n' "$(basename "$boot_jar")"
+    printf 'SPRING_PROFILE=%s\n' "$profile"
+  } >"$EXP001_APP_METADATA_FILE"
+}
+
+metadata_value() {
+  local key="$1"
+  local name
+  local value
+
+  [[ -f "$EXP001_APP_METADATA_FILE" ]] || return 1
+  while IFS='=' read -r name value; do
+    if [[ "$name" == "$key" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done <"$EXP001_APP_METADATA_FILE"
+  return 1
+}
+
+clear_app_state() {
+  rm -f "$EXP001_PID_FILE" "$EXP001_APP_METADATA_FILE"
+}
+
+jps_line_for_pid() {
+  local pid="$1"
+  jps -lmv | awk -v expected_pid="$pid" '$1 == expected_pid { print; found = 1 } END { if (!found) exit 1 }'
+}
+
+is_expected_app_process() {
+  local pid="$1"
+  local expected_jar="$2"
+  local expected_jar_name="$3"
+  local expected_profile="$4"
+  local jps_line
+
+  jps_line="$(jps_line_for_pid "$pid")" || return 1
+  [[ "$jps_line" == *"$expected_jar"* || "$jps_line" == *"$expected_jar_name"* ]] || return 1
+  [[ "$jps_line" == *"--spring.profiles.active=$expected_profile"* ]] || return 1
+}
+
 call_benchmark_endpoint() {
   local path="$1"
   local output_file="$2"
@@ -189,7 +239,12 @@ verify_response() {
   [[ "$(jq_raw '.missingKeyCount' "$file")" == "0" ]] || die "missingKeyCount가 0이 아닙니다: $file"
   [[ "$(jq_raw '.unexpectedKeyCount' "$file")" == "0" ]] || die "unexpectedKeyCount가 0이 아닙니다: $file"
   [[ "$(jq_raw '.duplicateKeyCount' "$file")" == "0" ]] || die "duplicateKeyCount가 0이 아닙니다: $file"
-  [[ "$(jq_raw '.expectedChecksum' "$file")" == "$(jq_raw '.actualChecksum' "$file")" ]] || die "checksum이 일치하지 않습니다: $file"
+  jq -e '(.expectedChecksum | type == "string") and (.expectedChecksum | test("^[0-9a-f]{64}$"))' "$file" >/dev/null \
+    || die "expectedChecksum이 lowercase SHA-256 64자리 문자열이 아닙니다: $file"
+  jq -e '(.actualChecksum | type == "string") and (.actualChecksum | test("^[0-9a-f]{64}$"))' "$file" >/dev/null \
+    || die "actualChecksum이 lowercase SHA-256 64자리 문자열이 아닙니다: $file"
+  jq -e '.expectedChecksum == .actualChecksum' "$file" >/dev/null \
+    || die "checksum이 일치하지 않습니다: $file"
 }
 
 cooldown() {

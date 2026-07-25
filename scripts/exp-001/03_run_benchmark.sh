@@ -5,16 +5,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
 
+CURRENT_TEMP_FILE=""
+
+cleanup_current_temp_file() {
+  if [[ "$CURRENT_TEMP_FILE" != "" ]]; then
+    rm -f -- "$CURRENT_TEMP_FILE"
+  fi
+}
+
+trap cleanup_current_temp_file EXIT
+
 run_one() {
   local path="$1"
   local output_file="$2"
   local label="$3"
+  local temp_file="${output_file}.tmp.$$"
+
+  [[ ! -e "$output_file" ]] || die "final output file이 이미 존재합니다: $output_file"
+  rm -f -- "$temp_file"
+  CURRENT_TEMP_FILE="$temp_file"
 
   require_db_safety_gate
   reset_benchmark_table
   log "$label: $path endpoint 호출"
-  call_benchmark_endpoint "$path" "$output_file" "$EXPECTED_INPUT_COUNT"
-  verify_response "$path" "$output_file" "$EXPECTED_INPUT_COUNT"
+
+  if ! call_benchmark_endpoint "$path" "$temp_file" "$EXPECTED_INPUT_COUNT"; then
+    rm -f -- "$temp_file"
+    CURRENT_TEMP_FILE=""
+    die "HTTP 호출 실패로 결과를 final path에 반영하지 않았습니다: $output_file"
+  fi
+
+  if ! ( verify_response "$path" "$temp_file" "$EXPECTED_INPUT_COUNT" ); then
+    rm -f -- "$temp_file"
+    CURRENT_TEMP_FILE=""
+    die "response 검증 실패로 결과를 final path에 반영하지 않았습니다: $output_file"
+  fi
+
+  if ! mv -- "$temp_file" "$output_file"; then
+    rm -f -- "$temp_file"
+    CURRENT_TEMP_FILE=""
+    die "검증된 temporary JSON을 final path로 이동하지 못했습니다: $output_file"
+  fi
+  CURRENT_TEMP_FILE=""
+
   cooldown "$COOLDOWN_SECONDS"
 }
 
