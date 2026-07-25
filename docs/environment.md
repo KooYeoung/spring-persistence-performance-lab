@@ -1,6 +1,6 @@
-# Environment
+# 환경
 
-M0 targets:
+M0 기준 환경:
 
 - Java 21
 - Gradle Wrapper 8.14.4
@@ -8,14 +8,31 @@ M0 targets:
 - PostgreSQL Docker image `postgres:17.6-alpine`
 - Docker Compose
 
-The application uses safe local datasource defaults that can be overridden with environment variables. No production profile or production datasource value is included.
+Application은 환경 변수로 덮어쓸 수 있는 안전한 local datasource default를 사용한다. Production profile이나 production datasource value는 포함하지 않는다.
 
 ## Logging
 
-SQL logging is disabled by default:
+SQL logging은 기본적으로 비활성화한다.
 
 - `spring.jpa.show-sql=false`
 - `logging.level.org.hibernate.SQL=OFF`
 - `logging.level.org.hibernate.orm.jdbc.bind=OFF`
 
-SQL logging, bind logging, Hibernate statistics, profiler agents, and verbose container logging can affect timing. Official timing is reserved for EXP-001 and is not produced in M0.
+SQL logging, bind logging, Hibernate statistics, profiler agent, verbose container logging은 timing에 영향을 줄 수 있다. Official timing은 EXP-001에서만 수행하며 M0에서는 생성하지 않는다.
+
+## EXP-001 환경 정책
+
+EXP-001 세부 환경 규칙은 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md`에 정의한다.
+
+공통 환경 정책:
+
+- Java, Gradle, Spring Boot, PostgreSQL, Docker, OS, CPU, memory, disk, Git revision, active profile, sanitized datasource URL, logging settings, Hikari settings, transaction isolation을 기록한다.
+- secret, user absolute path, DB dump, profiler raw artifact, private source information은 기록하지 않는다.
+- official timing에서는 SQL logging, bind logging, Hibernate statistics, debugger, profiler agent를 비활성화한다.
+
+Gradle process option과 benchmark JVM option은 구분한다.
+
+- Gradle execution은 `--no-daemon`, `--max-workers=1` 같은 옵션을 사용할 수 있다.
+- `-Xms2g`, `-Xmx2g`, `-XX:+UseG1GC`, `-Duser.timezone=UTC` 같은 benchmark JVM option은 forked benchmark JVM에 적용해야 한다. 예를 들어 `JavaExec.jvmArgs` 또는 동등한 runner mechanism을 사용한다.
+
+이 문서는 EXP-001 Gradle task나 runner를 구현하지 않는다.
