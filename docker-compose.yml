@@ -1,0 +1,23 @@
+name: spring-persistence-performance-lab
+
+services:
+  persistence-lab-postgres:
+    image: postgres:17.6-alpine
+    container_name: spring-persistence-performance-lab-postgres
+    ports:
+      - "127.0.0.1:55432:5432"
+    environment:
+      POSTGRES_DB: persistence_lab
+      POSTGRES_USER: lab_user
+      POSTGRES_PASSWORD: lab_password
+    volumes:
+      - spring-persistence-performance-lab-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab_user -d persistence_lab"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  spring-persistence-performance-lab-postgres-data:

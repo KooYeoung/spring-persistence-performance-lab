@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: spring-persistence-performance-lab
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:55432/persistence_lab}
+    username: ${SPRING_DATASOURCE_USERNAME:lab_user}
+    password: ${SPRING_DATASOURCE_PASSWORD:lab_password}
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        generate_statistics: false
+
+logging:
+  level:
+    org.hibernate.SQL: ${HIBERNATE_SQL_LOG_LEVEL:OFF}
+    org.hibernate.orm.jdbc.bind: ${HIBERNATE_BIND_LOG_LEVEL:OFF}
+
+lab:
+  persistence:
+    jdbc-batch-size: ${LAB_PERSISTENCE_JDBC_BATCH_SIZE:1000}
