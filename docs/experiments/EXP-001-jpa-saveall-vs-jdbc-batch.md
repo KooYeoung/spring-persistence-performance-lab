@@ -208,6 +208,7 @@ Actual JDBC connection gate:
 - server version query 성공
 - JDBC metadata URL이 loopback target을 가리킴
 - connection이 read-only가 아님
+- 실제 JDBC connection의 transaction isolation이 `READ_COMMITTED`인지 검증하며, 일치하지 않으면 destructive reset과 official execution을 중단함
 
 Configured value 또는 actual connection identity 중 하나라도 다르면 reset과 official execution을 중단한다.
 
