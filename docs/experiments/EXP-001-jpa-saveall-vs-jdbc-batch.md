@@ -32,7 +32,7 @@ EXP-001 구현은 script-first 구조를 사용한다.
 
 애플리케이션에는 `exp001` profile에서만 등록되는 최소 profiling HTTP endpoint와 해당 endpoint가 호출하는 facade만 둔다. 이 코드는 deterministic input 생성, 기존 persistence service 호출, `System.nanoTime()` 측정, service 반환 후 consistency verification, 최소 response 반환만 담당한다.
 
-외부 script harness는 `scripts/exp-001/`에 둔다. 다음 책임은 애플리케이션 안에 넣지 않는다.
+외부 script harness는 `scripts/exp-001/`에 둔다. Windows는 `.cmd` launcher와 PowerShell `.ps1`을 사용하고, macOS는 Bash `.sh`를 사용한다. 다음 책임은 애플리케이션 안에 넣지 않는다.
 
 - 애플리케이션 시작과 종료
 - command와 환경 점검
@@ -48,9 +48,9 @@ EXP-001 구현은 script-first 구조를 사용한다.
 
 ## 실행 방식
 
-`01_start_app.sh`가 `bootJar`를 생성한 뒤 별도 benchmark JVM을 `java -jar`로 실행한다. Spring profile은 `exp001`을 사용한다.
+Platform별 `start` action이 `bootJar`를 생성한 뒤 별도 benchmark JVM을 `java -jar`로 실행한다. Spring profile은 `exp001`을 사용한다.
 
-Script harness는 다음 profiling endpoint를 `curl`로 호출한다.
+Script harness는 다음 profiling endpoint를 호출한다. Windows는 PowerShell HTTP 기능을 사용하고, macOS는 `curl`을 사용한다.
 
 - `POST /internal/exp-001/jpa`
 - `POST /internal/exp-001/jdbc`
@@ -136,9 +136,21 @@ Official timing 전에 warm-up을 수행한다.
 - JPA warm-up count: 1
 - JDBC warm-up count: 1
 - warm-up input count: 50,000
-- warm-up order: JPA, reset, JDBC, reset
 
-Warm-up 기록은 raw record에만 `warmup=true`로 남긴다. Official statistics에는 포함하지 않는다.
+Warm-up order:
+
+1. DB Safety Gate 검증
+2. reset
+3. JPA warm-up
+4. response 검증
+5. cooldown
+6. DB Safety Gate 재검증
+7. reset
+8. JDBC warm-up
+9. response 검증
+10. cooldown
+
+Warm-up 결과는 `<run-id>/warmup/*.json`에 저장하고 official 12개 결과와 분리한다. Warm-up response에는 별도 marker field를 추가하지 않는다. Official 결과는 `<run-id>/official/*.json`에 저장하며, summary는 official JSON만 사용한다. Warm-up 결과는 official statistics에 포함하지 않는다.
 
 ## Official Runs
 
@@ -177,7 +189,7 @@ Benchmark JVM 옵션:
 - `-XX:+UseG1GC`
 - `-Duser.timezone=UTC`
 
-Benchmark JVM 옵션은 `01_start_app.sh`가 실행하는 `java -jar` process에 직접 적용해야 한다. 이 옵션을 Gradle process에만 적용하는 옵션으로 문서화하거나 구현하지 않는다.
+Benchmark JVM 옵션은 platform별 `start` action이 실행하는 `java -jar` process에 직접 적용해야 한다. 이 옵션을 Gradle process에만 적용하는 옵션으로 문서화하거나 구현하지 않는다.
 
 Official run은 warm-up 이후 같은 benchmark JVM에서 수행한다. Run 사이에 `System.gc()`를 호출하지 않는다.
 
@@ -211,11 +223,11 @@ Configuration gate:
 - configured database가 `persistence_lab`
 - configured username이 `lab_user`
 
-Actual JDBC connection gate:
+Actual DB identity gate:
 
-- `current_database()`가 `persistence_lab`를 반환
-- `current_user`가 `lab_user`를 반환
-- `SHOW transaction_isolation`이 `read committed`를 반환
+- Docker Compose PostgreSQL service 내부 `psql`의 `current_database()`가 `persistence_lab`를 반환
+- Docker Compose PostgreSQL service 내부 `psql`의 `current_user`가 `lab_user`를 반환
+- Docker Compose PostgreSQL service 내부 `psql`의 `SHOW transaction_isolation`이 `read committed`를 반환
 
 Configured value 또는 actual connection identity 중 하나라도 다르면 reset과 official execution을 중단한다.
 
@@ -225,7 +237,11 @@ Official execution 전 script가 자동 확인하는 항목:
 
 - Java version
 - application reachable
-- required command: `java`, `curl`, `psql`, `jq`, `awk`
+- required command: `java`, `git`, `docker compose`
+- Windows required runtime: Windows PowerShell 5.1 이상
+- macOS required runtime: macOS 기본 Bash와 `curl`
+- JSON tool: `tools/jq.lock`에 고정된 portable `jq`
+- DB client: Docker Compose PostgreSQL service 내부 `psql`
 - project root
 - result path
 - configured DB identity
@@ -306,14 +322,7 @@ Invalid 조건:
 - environment collection failure
 - elapsed time is not positive
 
-Invalid reason은 다음으로 분류한다.
-
-- `SYSTEM_ERROR`
-- `CONSISTENCY_FAILURE`
-
-상세 reason은 raw run record에 남긴다.
-
-Invalid run은 raw results에 보존하고 representative statistics에서 제외하며 삭제하거나 성공 run으로 덮어쓰지 않는다. 한 round에서 JPA 또는 JDBC 중 하나라도 invalid이면 해당 round는 paired comparison에서 제외한다.
+HTTP failure, timeout, JSON parse failure, consistency failure는 해당 official set을 즉시 중단한다. 실패한 response는 final official JSON으로 승격하지 않고, 부족한 step만 보충하지 않는다. 원인을 수정한 뒤 새 run ID로 전체 official set을 다시 실행한다.
 
 ## 지표와 통계(Metrics And Statistics)
 
@@ -333,7 +342,7 @@ Endpoint response field:
 - `expectedChecksum`
 - `actualChecksum`
 
-Script는 warm-up과 official response JSON을 파일로 보존한다. Official round와 order position은 파일명으로 식별한다.
+Script는 검증을 통과한 warm-up과 official response JSON을 파일로 보존한다. Official round와 order position은 파일명으로 식별한다.
 
 대표 통계:
 
@@ -356,7 +365,6 @@ Script는 warm-up과 official response JSON을 파일로 보존한다. Official 
 - time reduction과 speedup은 반올림 전 median value로 계산
 - 반올림은 표시 단계에서만 수행
 - elapsed milliseconds는 소수 3자리로 표시
-- elapsed seconds는 소수 6자리로 표시
 - rows per second는 소수 2자리로 표시
 - percentage는 소수 2자리로 표시
 - denominator가 `0`이면 `null` 출력
@@ -375,7 +383,7 @@ Profiler HTML, raw stack traces, JFR files, heap dumps, large logs, DB dumps는 
 
 Script harness output은 다음 구조를 사용한다.
 
-- run ID: UTC `yyyyMMdd'T'HHmmssSSS'Z'-<shortGitSha>`
+- run ID: UTC `yyyyMMdd'T'HHmmss'Z'-<shortGitSha>`
 - directory: `results/exp-001/<run-id>/`
 - `warmup/*.json`
 - `official/*.json`
@@ -387,18 +395,38 @@ Run ID에는 user name, host-specific absolute path, secret을 포함하지 않�
 
 다음 명령은 script-first 구현이 `main`에 병합된 뒤 clean public revision에서 사용할 재현 명령이다. 공식 실행 전 `.env`를 확인하고 destructive reset 승인 값을 명시적으로 바꿔야 한다.
 
+Windows:
+
+```cmd
+git switch main
+git pull --ff-only origin main
+git status --short --branch
+docker compose up -d
+docker inspect --format "{{.State.Health.Status}}" spring-persistence-performance-lab-postgres
+scripts\exp-001\windows\exp001.cmd prepare
+scripts\exp-001\windows\exp001.cmd start
+scripts\exp-001\windows\exp001.cmd check
+scripts\exp-001\windows\exp001.cmd benchmark
+scripts\exp-001\windows\exp001.cmd summary
+scripts\exp-001\windows\exp001.cmd stop
+git status --short --branch
+docker compose down
+```
+
+macOS:
+
 ```bash
 git switch main
 git pull --ff-only origin main
 git status --short --branch
 docker compose up -d
 docker inspect --format '{{.State.Health.Status}}' spring-persistence-performance-lab-postgres
-bash scripts/exp-001/00_prepare.sh
-bash scripts/exp-001/01_start_app.sh
-bash scripts/exp-001/02_check_environment.sh
-bash scripts/exp-001/03_run_benchmark.sh
-bash scripts/exp-001/04_generate_summary.sh
-bash scripts/exp-001/05_stop_app.sh
+./scripts/exp-001/macos/exp001.sh prepare
+./scripts/exp-001/macos/exp001.sh start
+./scripts/exp-001/macos/exp001.sh check
+./scripts/exp-001/macos/exp001.sh benchmark
+./scripts/exp-001/macos/exp001.sh summary
+./scripts/exp-001/macos/exp001.sh stop
 git status --short --branch
 docker compose down
 ```

@@ -18,4 +18,6 @@ EXP-001 result structure와 schema는 `docs/experiments/EXP-001-jpa-saveall-vs-j
 
 승인된 script-first harness가 clean public revision에서 official public reproduction을 실행하기 전까지 EXP-001 result file은 존재하지 않는다.
 
-Run ID에는 user name, user absolute path, host-local secret, private identifier를 포함하지 않는다.
+Run ID는 Windows와 macOS harness 모두 UTC timestamp와 short public Git SHA만 사용한다. Run ID에는 user name, user absolute path, host-local secret, private identifier를 포함하지 않는다.
+
+Official summary는 platform별 harness가 동일한 portable `jq` filter로 official JSON 전체를 검증한 뒤 생성한다. Invalid, extra, unknown path JSON이 있으면 summary를 확정하지 않는다.
