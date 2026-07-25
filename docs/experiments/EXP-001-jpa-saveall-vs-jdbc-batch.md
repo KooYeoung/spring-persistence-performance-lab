@@ -28,29 +28,38 @@ Public reproduction 결과는 모든 필수 consistency gate를 통과한 경우
 
 ## 구현 경계
 
-이 프로토콜 문서는 benchmark runner를 구현하지 않는다.
+EXP-001 구현은 script-first 구조를 사용한다.
 
-Runner 구현은 이 프로토콜이 `main`에 병합된 뒤 별도 feature branch와 PR에서 진행한다. 이후 구현에서도 별도 승인 없이 M0 persistence path를 재설계하지 않는다.
+애플리케이션에는 `exp001` profile에서만 등록되는 최소 profiling HTTP endpoint와 해당 endpoint가 호출하는 facade만 둔다. 이 코드는 deterministic input 생성, 기존 persistence service 호출, `System.nanoTime()` 측정, service 반환 후 consistency verification, 최소 response 반환만 담당한다.
 
-향후 runner 구현은 다음을 제공해야 한다.
+외부 script harness는 `scripts/exp-001/`에 둔다. 다음 책임은 애플리케이션 안에 넣지 않는다.
 
-- command-line Spring Boot benchmark runner
-- PowerShell에서 benchmark를 실행할 수 있는 Gradle task
-- DB safety gate와 reset logic
-- environment collection
-- result writing
-- summary calculation
-- runner, safety gate, statistics, result writing 테스트
+- 애플리케이션 시작과 종료
+- command와 환경 점검
+- DB safety gate와 destructive reset
+- warm-up
+- official round 반복 실행
+- timeout
+- HTTP response JSON 저장
+- summary Markdown 생성
+- median, throughput, min/max/mean/stddev/CV 계산
 
-EXP-001 timing run은 해당 구현이 `main`에 병합되고 clean public revision에서 실행되기 전까지 공식 결과가 아니다.
+이후 구현에서도 별도 승인 없이 M0 persistence path를 재설계하지 않는다. EXP-001 timing run은 script-first 구현이 `main`에 병합되고 clean public revision에서 실행되기 전까지 공식 결과가 아니다.
 
 ## 실행 방식
 
-전용 Gradle task로 호출되는 Spring Boot command-line benchmark runner를 사용한다.
+`01_start_app.sh`가 `bootJar`를 생성한 뒤 별도 benchmark JVM을 `java -jar`로 실행한다. Spring profile은 `exp001`을 사용한다.
 
-EXP-001에서도 Controller나 benchmark HTTP endpoint를 추가하지 않는다.
+Script harness는 다음 profiling endpoint를 `curl`로 호출한다.
 
-Runner는 Spring 안에서 실행되어 기존 persistence service를 Spring proxy를 통해 호출해야 한다. Runner 자체에 transactional persistence logic을 넣지 않는다.
+- `POST /internal/exp-001/jpa`
+- `POST /internal/exp-001/jdbc`
+
+Endpoint는 기본 profile과 운영 profile에서 등록되지 않는다. Controller는 request 수신, profiling facade 호출, response 반환만 담당한다.
+
+Profiling facade는 Spring 안에서 실행되어 기존 persistence service를 Spring proxy를 통해 호출해야 한다. Facade 자체에 transactional persistence logic을 넣지 않는다.
+
+k6 기반 동시성 실험은 EXP-001에 포함하지 않고 별도 EXP-002에서 다룬다.
 
 ## 측정 구간(Timing Boundary)
 
@@ -61,7 +70,7 @@ Timer 시작 시점:
 - command list 생성 완료 후
 - database reset 완료 후
 - 시작 row count가 `0`임을 확인한 후
-- runner bean이 persistence service proxy를 호출하기 직전
+- profiling facade가 persistence service proxy를 호출하기 직전
 
 Timer 종료 시점:
 
@@ -91,19 +100,21 @@ Elapsed time은 `System.nanoTime()`으로 측정한다. Wall-clock timestamp에�
 
 ## Transaction Commit 요구사항
 
-Benchmark runner는 별도 Spring bean인 persistence service를 호출하는 Spring bean이어야 한다.
+Profiling facade는 별도 Spring bean인 persistence service를 호출하는 Spring bean이어야 한다.
 
 필수 구조:
 
-- timer는 benchmark runner bean에서 시작한다.
-- runner는 별도 persistence service bean의 public method를 호출한다.
+- timer는 profiling facade에서 시작한다.
+- facade는 별도 persistence service bean의 public method를 호출한다.
 - persistence service public method에는 `@Transactional`이 적용된다.
-- runner와 persistence service는 같은 bean이 아니다.
+- facade에는 `@Transactional`을 붙이지 않는다.
+- facade와 persistence service는 같은 bean이 아니다.
 - self-invocation은 금지한다.
 - service proxy가 정상 반환한 뒤 timer를 종료한다.
 - proxy 반환은 transaction commit 완료를 의미한다.
+- consistency verification은 timer 종료 후 수행한다.
 
-Runner 구현 리뷰에서는 이 구조를 반드시 검증한다.
+구현 리뷰에서는 이 구조를 반드시 검증한다.
 
 ## 입력
 
@@ -166,9 +177,9 @@ Benchmark JVM 옵션:
 - `-XX:+UseG1GC`
 - `-Duser.timezone=UTC`
 
-Benchmark JVM 옵션은 향후 `runExp001` task가 사용하는 forked benchmark JVM에 직접 적용해야 한다. 예를 들어 `JavaExec.jvmArgs` 또는 동등한 forked JVM 실행 방식에 적용한다. 이 옵션을 Gradle process에만 적용하는 옵션으로 문서화하거나 구현하지 않는다.
+Benchmark JVM 옵션은 `01_start_app.sh`가 실행하는 `java -jar` process에 직접 적용해야 한다. 이 옵션을 Gradle process에만 적용하는 옵션으로 문서화하거나 구현하지 않는다.
 
-Official run은 warm-up 이후 하나의 benchmark JVM에서 수행한다. Run 사이에 `System.gc()`를 호출하지 않는다. Environment output에는 effective JVM arguments와 GC name을 기록한다.
+Official run은 warm-up 이후 같은 benchmark JVM에서 수행한다. Run 사이에 `System.gc()`를 호출하지 않는다.
 
 ## Database 전략
 
@@ -194,8 +205,7 @@ Reset은 모든 safety gate가 통과한 경우에만 허용한다.
 
 Configuration gate:
 
-- active profile이 `exp001`
-- `lab.experiment.allow-destructive-reset=true`
+- `ALLOW_DESTRUCTIVE_RESET=true`
 - configured host가 `localhost` 또는 `127.0.0.1`
 - configured port가 `55432`
 - configured database가 `persistence_lab`
@@ -205,34 +215,22 @@ Actual JDBC connection gate:
 
 - `current_database()`가 `persistence_lab`를 반환
 - `current_user`가 `lab_user`를 반환
-- server version query 성공
-- JDBC metadata URL이 loopback target을 가리킴
-- connection이 read-only가 아님
-- 실제 JDBC connection의 transaction isolation이 `READ_COMMITTED`인지 검증하며, 일치하지 않으면 destructive reset과 official execution을 중단함
+- `SHOW transaction_isolation`이 `read committed`를 반환
 
 Configured value 또는 actual connection identity 중 하나라도 다르면 reset과 official execution을 중단한다.
 
 ## 실행 환경 안정화
 
-Official execution 전 자동 확인 항목:
+Official execution 전 script가 자동 확인하는 항목:
 
-- clean working tree
-- current branch와 Git SHA
 - Java version
-- Gradle version
-- Docker version
-- PostgreSQL server version
-- OS
-- CPU
-- memory snapshot
-- disk free space
-- sanitized JDBC URL
-- active Spring profile
-- SQL logging disabled
-- Hibernate statistics disabled
-- effective JDBC batch size
-- effective Hikari settings
-- effective transaction isolation
+- application reachable
+- required command: `java`, `curl`, `psql`, `jq`, `awk`
+- project root
+- result path
+- configured DB identity
+- actual DB identity
+- transaction isolation
 
 Official execution 전 수동 확인 항목:
 
@@ -261,22 +259,21 @@ Official execution 전 수동 확인 항목:
 | Java | Gradle toolchain `21`; runtime version 기록 |
 | Spring Boot | `3.5.16` |
 | Gradle Wrapper | `8.14.4` |
-| Gradle execution | `--no-daemon --max-workers=1` 사용 |
-| Benchmark JVM heap | forked JVM에 `-Xms2g -Xmx2g` 적용 |
-| Benchmark JVM GC | forked JVM에 `-XX:+UseG1GC` 적용; 실제 GC 기록 |
-| Timezone | forked JVM에 `-Duser.timezone=UTC` 적용 |
-| PostgreSQL image | `postgres:17.6-alpine`; server version 기록 |
-| Git revision | clean `main` HEAD SHA 기록 |
+| Gradle execution | `bootJar` 생성 시 `--no-daemon --max-workers=1` 사용 |
+| Benchmark JVM heap | `java -jar` JVM에 `-Xms2g -Xmx2g` 적용 |
+| Benchmark JVM GC | `java -jar` JVM에 `-XX:+UseG1GC` 적용 |
+| Timezone | `java -jar` JVM에 `-Duser.timezone=UTC` 적용 |
+| PostgreSQL image | `postgres:17.6-alpine` |
+| Git revision | run ID에 short public Git SHA 포함 |
 | JPA ID strategy | `GenerationType.IDENTITY` |
 | Hibernate batch size | `not configured` |
 | Hibernate `order_inserts` | `not configured` |
 | JDBC batch size | default `1000`; effective value 기록 |
 | `rewriteBatchedInserts` | `not configured` |
-| Hikari `maximumPoolSize` | EXP-001 profile에서 `4`로 고정 |
-| Hikari `minimumIdle` | EXP-001 profile에서 `1`로 고정 |
-| Hikari connection timeout | EXP-001 profile에서 `30000ms`로 고정 |
-| auto-commit | effective value 기록 |
-| transaction isolation | effective value 기록; expected `READ_COMMITTED` |
+| Hikari `maximumPoolSize` | `exp001` profile에서 `4`로 고정 |
+| Hikari `minimumIdle` | `exp001` profile에서 `1`로 고정 |
+| Hikari connection timeout | `exp001` profile에서 `30000ms`로 고정 |
+| transaction isolation | script gate에서 `read committed` 확인 |
 | input count | `50000` |
 | warm-up count | 이 문서의 path별 count 사용 |
 | official run count | 이 문서의 path별 count 사용 |
@@ -320,26 +317,23 @@ Invalid run은 raw results에 보존하고 representative statistics에서 제�
 
 ## 지표와 통계(Metrics And Statistics)
 
-Raw metrics:
+Endpoint response field:
 
-- `runId`
 - `path`
-- `round`
-- `orderPosition`
-- `warmup`
-- `valid`
-- `invalidReasonType`
-- `invalidReason`
 - `inputCount`
+- `savedCount`
 - `elapsedNanos`
 - `elapsedMillis`
-- `elapsedSeconds`
-- `rowsPerSecond`
-- `savedCount`
+- `valid`
 - `rowCount`
-- `checksum`
-- `timestamp`
-- `gitSha`
+- `distinctBusinessKeyCount`
+- `missingKeyCount`
+- `unexpectedKeyCount`
+- `duplicateKeyCount`
+- `expectedChecksum`
+- `actualChecksum`
+
+Script는 warm-up과 official response JSON을 파일로 보존한다. Official round와 order position은 파일명으로 식별한다.
 
 대표 통계:
 
@@ -373,37 +367,38 @@ EXP-001은 timing + consistency only로 수행한다.
 
 Official timing run 중에는 CPU profiling, sampled allocation profiling, JFR, heap dump collection을 실행하지 않는다.
 
-Profiler 작업이 나중에 필요하면 별도 experiment 또는 subphase로 분리하고 별도 결과로 남긴다. Profiler output은 official timing representative data로 사용하지 않는다.
+async-profiler 작업이 나중에 필요하면 외부 profiling subphase로 분리하고 별도 결과로 남긴다. Profiler output은 official timing representative data로 사용하지 않는다.
 
 Profiler HTML, raw stack traces, JFR files, heap dumps, large logs, DB dumps는 commit하지 않는다.
 
 ## 결과 구조(Result Structure)
 
-이 프로토콜 문서는 result file을 생성하지 않는다.
-
-향후 runner output은 다음 구조를 사용한다.
+Script harness output은 다음 구조를 사용한다.
 
 - run ID: UTC `yyyyMMdd'T'HHmmssSSS'Z'-<shortGitSha>`
 - directory: `results/exp-001/<run-id>/`
-- `environment.json`
-- `timings.csv`
-- `consistency.json`
+- `warmup/*.json`
+- `official/*.json`
 - `summary.md`
 
 Run ID에는 user name, host-specific absolute path, secret을 포함하지 않는다.
 
 ## 재현 명령(Reproduction Commands)
 
-다음 명령은 runner 구현 PR이 `main`에 병합된 뒤 사용할 placeholder이다. `docs/exp-001-protocol` branch는 공식 benchmark 실행 branch가 아니다.
+다음 명령은 script-first 구현이 `main`에 병합된 뒤 clean public revision에서 사용할 재현 명령이다. 공식 실행 전 `.env`를 확인하고 destructive reset 승인 값을 명시적으로 바꿔야 한다.
 
-```powershell
+```bash
 git switch main
 git pull --ff-only origin main
 git status --short --branch
 docker compose up -d
 docker inspect --format '{{.State.Health.Status}}' spring-persistence-performance-lab-postgres
-.\gradlew.bat --no-daemon --max-workers=1 clean build
-.\gradlew.bat --no-daemon --max-workers=1 runExp001 --args="--spring.profiles.active=exp001 --lab.experiment.allow-destructive-reset=true"
+bash scripts/exp-001/00_prepare.sh
+bash scripts/exp-001/01_start_app.sh
+bash scripts/exp-001/02_check_environment.sh
+bash scripts/exp-001/03_run_benchmark.sh
+bash scripts/exp-001/04_generate_summary.sh
+bash scripts/exp-001/05_stop_app.sh
 git status --short --branch
 docker compose down
 ```

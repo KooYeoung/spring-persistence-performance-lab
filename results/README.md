@@ -12,11 +12,10 @@ EXP-001 result structure와 schema는 `docs/experiments/EXP-001-jpa-saveall-vs-j
 
 향후 예상 layout:
 
-- `results/exp-001/<run-id>/environment.json`
-- `results/exp-001/<run-id>/timings.csv`
-- `results/exp-001/<run-id>/consistency.json`
+- `results/exp-001/<run-id>/warmup/*.json`
+- `results/exp-001/<run-id>/official/*.json`
 - `results/exp-001/<run-id>/summary.md`
 
-승인된 runner가 구현되고 clean public revision에서 official public reproduction을 실행하기 전까지 EXP-001 result file은 존재하지 않는다.
+승인된 script-first harness가 clean public revision에서 official public reproduction을 실행하기 전까지 EXP-001 result file은 존재하지 않는다.
 
 Run ID에는 user name, user absolute path, host-local secret, private identifier를 포함하지 않는다.
