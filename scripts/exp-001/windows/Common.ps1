@@ -618,6 +618,59 @@ function Quote-ProcessArgument {
     return $Value
 }
 
+function Convert-ProcessCreationDateToUtcTicks {
+    param([AllowNull()] [object] $CreationDate)
+
+    if ($null -eq $CreationDate) {
+        throw 'process CreationDate가 비어 있습니다.'
+    }
+
+    if ($CreationDate -is [DateTime]) {
+        $utcDateTime = ([DateTime] $CreationDate).ToUniversalTime()
+    } elseif ($CreationDate -is [DateTimeOffset]) {
+        $utcDateTime = ([DateTimeOffset] $CreationDate).UtcDateTime
+    } elseif ($CreationDate -is [string]) {
+        $value = ([string] $CreationDate).Trim()
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            throw 'process CreationDate 문자열이 비어 있습니다.'
+        }
+        if ($value -notmatch '^\d{14}\.\d{6}[\+\-]\d{3}$') {
+            throw "process CreationDate가 DMTF date 형식이 아닙니다: $value"
+        }
+
+        try {
+            $utcDateTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($value).ToUniversalTime()
+        } catch {
+            throw "process CreationDate DMTF 값을 UTC로 변환할 수 없습니다: $value ($($_.Exception.Message))"
+        }
+    } else {
+        throw "지원하지 않는 process CreationDate type입니다: $($CreationDate.GetType().FullName)"
+    }
+
+    return $utcDateTime.Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function New-ProcessStartIdentity {
+    param(
+        [AllowNull()] [object] $CreationDate,
+        [string] $ProcessName,
+        [string] $CommandLine
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProcessName)) {
+        throw 'process name이 비어 있어 identity를 생성할 수 없습니다.'
+    }
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        throw 'process command line이 비어 있어 identity를 생성할 수 없습니다.'
+    }
+
+    $startTimeUtcTicks = Convert-ProcessCreationDateToUtcTicks -CreationDate $CreationDate
+    return [pscustomobject] @{
+        StartTimeUtcTicks = $startTimeUtcTicks
+        Value = "$startTimeUtcTicks|$ProcessName|$CommandLine"
+    }
+}
+
 function Get-LiveJavaProcessInfo {
     param([int] $PidValue)
 
@@ -632,45 +685,64 @@ function Get-LiveJavaProcessInfo {
         return $null
     }
 
-    $startTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($process.CreationDate).ToUniversalTime().ToString('o')
-    $identity = "$startTime|$processName|$commandLine"
+    $identity = New-ProcessStartIdentity -CreationDate $process.CreationDate -ProcessName $processName -CommandLine $commandLine
 
     return [pscustomobject] @{
         Pid = [int] $process.ProcessId
         ProcessName = $processName
         CommandLine = $commandLine
-        StartTimeUtc = $startTime
-        ProcessStartIdentity = $identity
+        StartTimeUtcTicks = $identity.StartTimeUtcTicks
+        ProcessStartIdentity = $identity.Value
     }
 }
 
-function Write-ApplicationState {
+function New-ApplicationState {
     param(
         [int] $PidValue,
-        [string] $JarPath
+        [string] $JarPath,
+        [string] $Profile = ''
     )
+
+    if ([string]::IsNullOrWhiteSpace($Profile)) {
+        $Profile = Get-ConfigValue 'SPRING_PROFILE'
+    }
 
     $processInfo = Get-LiveJavaProcessInfo -PidValue $PidValue
     if ($null -eq $processInfo) {
-        Stop-Exp001 "시작한 PID가 Java application으로 확인되지 않습니다: $PidValue"
+        throw "시작한 PID가 Java application으로 확인되지 않습니다: $PidValue"
     }
 
-    $state = [ordered] @{
+    return [pscustomobject] ([ordered] @{
         pid = $PidValue
         processStartIdentity = $processInfo.ProcessStartIdentity
         jarPath = $JarPath
-        profile = (Get-ConfigValue 'SPRING_PROFILE')
+        profile = $Profile
         baseUrl = (Get-ConfigValue 'BASE_URL')
         platform = $Script:PlatformName
+    })
+}
+
+function Write-ApplicationState {
+    param([object] $State)
+
+    if ($null -eq $State) {
+        throw 'application state metadata가 비어 있습니다.'
     }
 
     $tempPath = "$Script:ApplicationStateFile.tmp.$PID"
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($tempPath, ($state | ConvertTo-Json -Depth 3), $utf8NoBom)
-    if (Test-Path -LiteralPath $Script:ApplicationStateFile) {
-        Remove-Item -LiteralPath $Script:ApplicationStateFile -Force
+    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, ($State | ConvertTo-Json -Depth 3), $utf8NoBom)
+        if (Test-Path -LiteralPath $Script:ApplicationStateFile) {
+            throw "application state final path가 이미 존재합니다: $Script:ApplicationStateFile"
+        }
+        [System.IO.File]::Move($tempPath, $Script:ApplicationStateFile)
+    } catch {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        throw
     }
-    [System.IO.File]::Move($tempPath, $Script:ApplicationStateFile)
 }
 
 function Read-ApplicationState {
@@ -689,6 +761,10 @@ function Clear-ApplicationState {
     Remove-Item -LiteralPath $Script:ApplicationStateFile -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $Script:StateDir 'app.pid') -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $Script:StateDir 'application.metadata') -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $Script:StateDir) {
+        Get-ChildItem -LiteralPath $Script:StateDir -Filter 'application.json.tmp.*' -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-ExpectedApplicationProcess {
@@ -725,16 +801,34 @@ function Test-ExpectedApplicationProcess {
 }
 
 function Invoke-StartupFailureCleanup {
-    param([string] $Reason)
+    param(
+        [string] $Reason,
+        [object] $State = $null,
+        [int] $PidValue = 0,
+        [string] $JarPath = '',
+        [string] $Profile = ''
+    )
 
     Write-Warn "startup 실패로 시작한 JVM 정리를 시도합니다: $Reason"
-    $state = Read-ApplicationState
-    if ($null -eq $state) {
+    $cleanupState = $State
+    if ($null -eq $cleanupState) {
+        $cleanupState = Read-ApplicationState
+    }
+    if ($null -eq $cleanupState -and $PidValue -gt 0 -and -not [string]::IsNullOrWhiteSpace($JarPath)) {
+        try {
+            $cleanupState = New-ApplicationState -PidValue $PidValue -JarPath $JarPath -Profile $Profile
+        } catch {
+            Clear-ApplicationState
+            Write-Warn "state 없이 시작한 JVM identity를 확인하지 못해 cleanup signal을 보내지 않습니다: $($_.Exception.Message)"
+            return
+        }
+    }
+    if ($null -eq $cleanupState) {
         Write-Warn 'application state가 없어 cleanup할 process를 확인할 수 없습니다.'
         return
     }
 
-    $pidValue = [int] $state.pid
+    $pidValue = [int] $cleanupState.pid
     $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
     if ($null -eq $liveProcess) {
         Clear-ApplicationState
@@ -742,7 +836,7 @@ function Invoke-StartupFailureCleanup {
         return
     }
 
-    if (-not (Test-ExpectedApplicationProcess -State $state)) {
+    if (-not (Test-ExpectedApplicationProcess -State $cleanupState)) {
         Write-Warn "PID가 기대한 EXP-001 application JVM과 일치하지 않아 signal을 보내지 않습니다: $pidValue"
         return
     }
@@ -762,14 +856,14 @@ function Invoke-StartupFailureCleanup {
             Write-Warn 'startup 실패 후 application JVM을 정상 종료하고 state를 정리했습니다.'
             return
         }
-        if (-not (Test-ExpectedApplicationProcess -State $state)) {
+        if (-not (Test-ExpectedApplicationProcess -State $cleanupState)) {
             Write-Warn "startup cleanup 대기 중 PID가 기대한 process와 달라져 강제 종료하지 않습니다: $pidValue"
             return
         }
         Start-Sleep -Seconds 1
     }
 
-    if (-not (Test-ExpectedApplicationProcess -State $state)) {
+    if (-not (Test-ExpectedApplicationProcess -State $cleanupState)) {
         Write-Warn "startup cleanup 강제 종료 직전 PID가 기대한 process와 달라져 강제 종료하지 않습니다: $pidValue"
         return
     }

@@ -123,7 +123,19 @@ function Invoke-Start {
     }
 
     Start-Sleep -Milliseconds 500
-    Write-ApplicationState -PidValue $process.Id -JarPath $bootJar
+    $applicationState = $null
+    try {
+        $applicationState = New-ApplicationState -PidValue $process.Id -JarPath $bootJar -Profile (Get-ConfigValue 'SPRING_PROFILE')
+        Write-ApplicationState -State $applicationState
+    } catch {
+        $failureMessage = "application state 생성에 실패했습니다: $($_.Exception.Message)"
+        Invoke-StartupFailureCleanup -Reason $failureMessage `
+            -State $applicationState `
+            -PidValue $process.Id `
+            -JarPath $bootJar `
+            -Profile (Get-ConfigValue 'SPRING_PROFILE')
+        Stop-Exp001 $failureMessage
+    }
     Write-Log "application PID: $($process.Id)"
 
     $deadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STARTUP_TIMEOUT_SECONDS'))
