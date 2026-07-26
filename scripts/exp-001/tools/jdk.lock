@@ -1,0 +1,15 @@
+vendor=Amazon Corretto
+java_version=21.0.11
+asset_version=21.0.11.10.1
+windows_x64_url=https://corretto.aws/downloads/resources/21.0.11.10.1/amazon-corretto-21.0.11.10.1-windows-x64-jdk.zip
+windows_x64_sha256=5d63fdb5a19393081919afc0daa4ce82a7fadcced569981a995529caed28fb14
+windows_x64_archive_type=zip
+windows_x64_jdk_home=jdk21.0.11_10
+macos_x64_url=https://corretto.aws/downloads/resources/21.0.11.10.1/amazon-corretto-21.0.11.10.1-macosx-x64.tar.gz
+macos_x64_sha256=fb08b09af67ca930d6868405263259d5e43faab89216f6886780e544fd700f00
+macos_x64_archive_type=tar.gz
+macos_x64_jdk_home=amazon-corretto-21.jdk/Contents/Home
+macos_arm64_url=https://corretto.aws/downloads/resources/21.0.11.10.1/amazon-corretto-21.0.11.10.1-macosx-aarch64.tar.gz
+macos_arm64_sha256=c6c9ba09ef0ae741aa04cfbd5ef8a6b75dd2d26034a1de0808ee7976a04446ea
+macos_arm64_archive_type=tar.gz
+macos_arm64_jdk_home=amazon-corretto-21.jdk/Contents/Home

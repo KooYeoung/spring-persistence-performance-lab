@@ -32,7 +32,13 @@ EXP-001 세부 환경 규칙은 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-ba
 
 Gradle process option과 benchmark JVM option은 구분한다.
 
-- Gradle execution은 `--no-daemon`, `--max-workers=1` 같은 옵션을 사용할 수 있다.
-- `-Xms2g`, `-Xmx2g`, `-XX:+UseG1GC`, `-Duser.timezone=UTC` 같은 benchmark JVM option은 forked benchmark JVM에 적용해야 한다. 예를 들어 `JavaExec.jvmArgs` 또는 동등한 runner mechanism을 사용한다.
+- Gradle execution은 `bootJar` 생성 시 `--no-daemon`, `--max-workers=1` 같은 옵션을 사용할 수 있다.
+- `-Xms2g`, `-Xmx2g`, `-XX:+UseG1GC`, `-Duser.timezone=UTC` 같은 benchmark JVM option은 platform별 EXP-001 `start` action이 실행하는 `java -jar` process에 적용해야 한다.
 
-이 문서는 EXP-001 Gradle task나 runner를 구현하지 않는다.
+EXP-001 harness는 Windows에서 `scripts\exp-001\windows\exp001.cmd`, macOS에서 `./scripts/exp-001/macos/exp001.sh`를 사용한다. local `psql`과 system-wide `jq` 설치를 요구하지 않으며, DB 확인은 Docker Compose PostgreSQL service 내부 `psql`, JSON 처리는 `scripts/exp-001/tools/jq.lock`에 고정된 portable `jq`를 사용한다.
+
+EXP-001 Java runtime은 system-wide `java` command에 의존하지 않고 `scripts/exp-001/tools/jdk.lock`에 고정된 Amazon Corretto JDK를 사용한다. `prepare`만 다운로드를 허용하며, `start`, `check`, `benchmark`는 이미 준비된 lock 일치 JDK만 검증한다.
+
+EXP-001 harness는 Docker Desktop 설치, Docker Engine 시작, 권한 변경, container/volume 삭제를 수행하지 않는다. Docker command, Engine 연결, Compose plugin, PostgreSQL service 존재, running 상태, health `healthy`를 확인하고 실패하면 안내 후 중단한다.
+
+이 문서는 EXP-001 script harness의 세부 실행 순서를 소유하지 않는다. EXP-001 세부 규칙은 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md`가 소유한다.

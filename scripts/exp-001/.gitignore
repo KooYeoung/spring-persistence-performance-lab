@@ -1,0 +1,6 @@
+.env
+.state/
+.tools/
+*.log
+*.tmp
+*.tmp.*
