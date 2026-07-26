@@ -207,6 +207,78 @@ function Require-Command {
     }
 }
 
+function Get-JavaExecutablePath {
+    $commands = @(Get-Command 'java.exe' -CommandType Application -ErrorAction SilentlyContinue)
+    if ($commands.Count -eq 0) {
+        Stop-Exp001 '필수 command를 찾을 수 없습니다: java'
+    }
+
+    $command = $commands[0]
+    $javaPath = [string] $command.Path
+    if ([string]::IsNullOrWhiteSpace($javaPath)) {
+        $javaPath = [string] $command.Source
+    }
+    if ([string]::IsNullOrWhiteSpace($javaPath)) {
+        $javaPath = [string] $command.Definition
+    }
+    if ([string]::IsNullOrWhiteSpace($javaPath) -or -not (Test-Path -LiteralPath $javaPath)) {
+        Stop-Exp001 "java.exe 경로를 확인할 수 없습니다: $javaPath"
+    }
+
+    return $javaPath
+}
+
+function Invoke-JavaVersionCommand {
+    param([string] $JavaPath)
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $JavaPath
+    $startInfo.Arguments = '-version'
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    try {
+        [void] $process.Start()
+    } catch {
+        Stop-Exp001 "java -version 실행에 실패했습니다: $($_.Exception.Message)"
+    }
+
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+
+    return [pscustomobject] @{
+        Stdout = $stdout
+        Stderr = $stderr
+        ExitCode = $process.ExitCode
+    }
+}
+
+function Get-JavaMajorVersion {
+    param([string] $VersionText)
+
+    if ([string]::IsNullOrWhiteSpace($VersionText)) {
+        return $null
+    }
+
+    $match = [regex]::Match($VersionText, 'version\s+"([0-9]+)(?:[._][^"]*)?"')
+    if (-not $match.Success) {
+        return $null
+    }
+
+    $major = 0
+    if (-not [int]::TryParse($match.Groups[1].Value, [ref] $major)) {
+        return $null
+    }
+
+    return $major
+}
+
 function Require-DockerCompose {
     Require-Command 'docker'
     & docker compose version *> $null
@@ -229,9 +301,23 @@ function Assert-ProjectRoot {
 }
 
 function Assert-Java21 {
-    Require-Command 'java'
-    $versionText = (& java -version 2>&1) -join "`n"
-    if ($versionText -notmatch 'version "21\.') {
+    $javaPath = Get-JavaExecutablePath
+    $result = Invoke-JavaVersionCommand -JavaPath $javaPath
+    $versionText = @($result.Stdout, $result.Stderr) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim() } |
+        Out-String
+    $versionText = $versionText.Trim()
+
+    if ($result.ExitCode -ne 0) {
+        Stop-Exp001 "java -version 실행이 실패했습니다. exit code: $($result.ExitCode), output: $versionText"
+    }
+
+    $majorVersion = Get-JavaMajorVersion -VersionText $versionText
+    if ($null -eq $majorVersion) {
+        Stop-Exp001 "Java version 문자열을 해석할 수 없습니다: $versionText"
+    }
+    if ($majorVersion -ne 21) {
         Stop-Exp001 "Java 21 runtime이 필요합니다. 현재 java -version: $versionText"
     }
 }
