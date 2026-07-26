@@ -177,6 +177,10 @@ Official set은 deterministic alternating order를 사용한다. 각 path가 fir
 
 Gradle 실행 옵션과 benchmark JVM 옵션은 구분한다.
 
+EXP-001의 Gradle process와 benchmark JVM은 `scripts/exp-001/tools/jdk.lock`에 고정된 Amazon Corretto JDK만 사용한다. 현재 고정값은 Amazon Corretto `21.0.11.10.1`, `JAVA_VERSION=21.0.11`이다.
+
+Script harness는 `prepare`에서만 JDK 다운로드를 허용한다. `start`, `check`, `benchmark`는 local 또는 `.tools/jdk/<platform>/`에 이미 준비된 lock 일치 JDK만 검증하고 사용한다. lock 검증은 JDK home, `bin/java`, `bin/javac`, `release` 파일, `IMPLEMENTOR="Amazon.com Inc."`, `IMPLEMENTOR_VERSION="Corretto-21.0.11.10.1"`, `JAVA_VERSION="21.0.11"`, `java -version`, `javac -version`, major version `21`을 포함한다.
+
 Gradle 실행 옵션:
 
 - `--no-daemon`
@@ -205,6 +209,8 @@ Docker Compose Public lab PostgreSQL database를 사용한다.
 
 Compose DB는 official EXP-001 database target이다. Testcontainers는 automated test 용도로만 유지하며 official timing target으로 사용하지 않는다.
 
+Harness는 Docker Desktop 설치, Docker Engine 시작, 권한 변경, WSL/UAC/group 변경, container/volume 삭제를 수행하지 않는다. Docker Compose PostgreSQL service는 사용자가 `docker compose up -d`로 미리 실행하고, harness는 command/Engine/Compose/service/running/health 상태만 확인한다.
+
 각 warm-up과 official run은 비어 있는 `benchmark_record` table에서 시작한다. Reset은 timing boundary 밖에서 수행한다.
 
 허용되는 reset command:
@@ -214,6 +220,8 @@ TRUNCATE TABLE benchmark_record RESTART IDENTITY;
 ```
 
 Reset은 모든 safety gate가 통과한 경우에만 허용한다.
+
+`check` action은 configured DB identity와 actual DB identity만 확인한다. `ALLOW_DESTRUCTIVE_RESET`은 reset 직전에만 확인한다.
 
 Configuration gate:
 
@@ -235,11 +243,11 @@ Configured value 또는 actual connection identity 중 하나라도 다르면 re
 
 Official execution 전 script가 자동 확인하는 항목:
 
-- Java version
+- locked Amazon Corretto JDK version
 - application reachable
-- required command: `java`, `git`, `docker compose`
+- required command: `git`, `docker compose`
 - Windows required runtime: Windows PowerShell 5.1 이상
-- macOS required runtime: macOS 기본 Bash와 `curl`
+- macOS required runtime: macOS 기본 Bash, `curl`, `shasum`, `tar`
 - JSON tool: `tools/jq.lock`에 고정된 portable `jq`
 - DB client: Docker Compose PostgreSQL service 내부 `psql`
 - project root
@@ -247,6 +255,7 @@ Official execution 전 script가 자동 확인하는 항목:
 - configured DB identity
 - actual DB identity
 - transaction isolation
+- Docker Engine 연결, Compose PostgreSQL service running 상태, health `healthy`
 
 Official execution 전 수동 확인 항목:
 
@@ -272,7 +281,7 @@ Official execution 전 수동 확인 항목:
 
 | 항목 | 값 또는 기록 정책 |
 |---|---|
-| Java | Gradle toolchain `21`; runtime version 기록 |
+| Java | Gradle toolchain `21`; Amazon Corretto `21.0.11.10.1`, `JAVA_VERSION=21.0.11` lock 검증 |
 | Spring Boot | `3.5.16` |
 | Gradle Wrapper | `8.14.4` |
 | Gradle execution | `bootJar` 생성 시 `--no-daemon --max-workers=1` 사용 |

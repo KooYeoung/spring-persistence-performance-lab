@@ -37,4 +37,8 @@ Gradle process option과 benchmark JVM option은 구분한다.
 
 EXP-001 harness는 Windows에서 `scripts\exp-001\windows\exp001.cmd`, macOS에서 `./scripts/exp-001/macos/exp001.sh`를 사용한다. local `psql`과 system-wide `jq` 설치를 요구하지 않으며, DB 확인은 Docker Compose PostgreSQL service 내부 `psql`, JSON 처리는 `scripts/exp-001/tools/jq.lock`에 고정된 portable `jq`를 사용한다.
 
+EXP-001 Java runtime은 system-wide `java` command에 의존하지 않고 `scripts/exp-001/tools/jdk.lock`에 고정된 Amazon Corretto JDK를 사용한다. `prepare`만 다운로드를 허용하며, `start`, `check`, `benchmark`는 이미 준비된 lock 일치 JDK만 검증한다.
+
+EXP-001 harness는 Docker Desktop 설치, Docker Engine 시작, 권한 변경, container/volume 삭제를 수행하지 않는다. Docker command, Engine 연결, Compose plugin, PostgreSQL service 존재, running 상태, health `healthy`를 확인하고 실패하면 안내 후 중단한다.
+
 이 문서는 EXP-001 script harness의 세부 실행 순서를 소유하지 않는다. EXP-001 세부 규칙은 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md`가 소유한다.
