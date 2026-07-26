@@ -277,10 +277,17 @@ function Invoke-Summary {
 
     try {
         $jq = Require-Jq
-        & $jq -r --argjson expectedCount ([int] (Get-ConfigValue 'EXPECTED_INPUT_COUNT')) -s -f $Script:SummaryFilter @($jsonFiles.FullName) > $tempSummary
-        if ($LASTEXITCODE -ne 0) {
+        $summaryLines = @(& $jq -r --argjson expectedCount ([int] (Get-ConfigValue 'EXPECTED_INPUT_COUNT')) -s -f $Script:SummaryFilter @($jsonFiles.FullName))
+        $jqExitCode = $LASTEXITCODE
+        if ($jqExitCode -ne 0) {
             Stop-Exp001 'official JSON gate 또는 summary 계산에 실패했습니다.'
         }
+        $newline = [Environment]::NewLine
+        $summaryText = [string]::Join($newline, [string[]] $summaryLines)
+        if ($summaryLines.Count -gt 0) {
+            $summaryText += $newline
+        }
+        [System.IO.File]::WriteAllText($tempSummary, $summaryText, $Script:Utf8NoBom)
         Move-Item -LiteralPath $tempSummary -Destination $summaryFile -Force
     } catch {
         Remove-Item -LiteralPath $tempSummary -Force -ErrorAction SilentlyContinue
