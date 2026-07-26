@@ -297,6 +297,77 @@ function Invoke-Summary {
     Write-Log "summary 생성 완료: $summaryFile"
 }
 
+function New-StopReadinessResult {
+    param(
+        [ValidateSet('READY', 'PROCESS_FOUND', 'PROCESS_UNKNOWN', 'PORT_TARGET_PID', 'PORT_OTHER_PID', 'PORT_UNKNOWN')] [string] $Status,
+        [string] $Message = ''
+    )
+
+    return [pscustomobject] ([ordered] @{
+        status = $Status
+        message = $Message
+    })
+}
+
+function Get-StopReadiness {
+    param([int] $PidValue)
+
+    $processQuery = Get-Exp001ProcessQuery -PidValue $PidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        return New-StopReadinessResult -Status 'PROCESS_UNKNOWN' -Message "process 조회 상태를 확정할 수 없습니다: $($processQuery.error)"
+    }
+    if ($processQuery.status -eq 'FOUND') {
+        return New-StopReadinessResult -Status 'PROCESS_FOUND' -Message "target process가 아직 실행 중입니다: $PidValue"
+    }
+
+    $serverPort = Get-ServerPort
+    $portQuery = Get-Exp001PortQuery -Port $serverPort -TargetPid $PidValue
+    if ($portQuery.status -eq 'UNKNOWN') {
+        return New-StopReadinessResult -Status 'PORT_UNKNOWN' -Message "port $serverPort listener 상태를 확정할 수 없습니다: $($portQuery.error)"
+    }
+    if ($portQuery.status -eq 'FREE') {
+        return New-StopReadinessResult -Status 'READY' -Message "target process가 없고 port $serverPort listener가 없습니다."
+    }
+
+    $ownerText = Format-Exp001PortOwnerPids -OwnerPids $portQuery.ownerPids
+    if ($portQuery.status -eq 'TARGET_PID') {
+        return New-StopReadinessResult -Status 'PORT_TARGET_PID' -Message "target PID가 port $serverPort listener를 유지하고 있습니다: $ownerText"
+    }
+
+    return New-StopReadinessResult -Status 'PORT_OTHER_PID' -Message "다른 PID가 port $serverPort listener를 소유하고 있습니다: $ownerText"
+}
+
+function Complete-StopCleanup {
+    param([string] $Message)
+
+    Clear-ApplicationState
+    if (Test-Path -LiteralPath $Script:ApplicationStateFile) {
+        Stop-Exp001 "application state 삭제를 확인하지 못했습니다: $Script:ApplicationStateFile"
+    }
+
+    Write-Log $Message
+}
+
+function Complete-StopIfReady {
+    param(
+        [int] $PidValue,
+        [string] $SuccessMessage,
+        [string] $FailurePrefix
+    )
+
+    $readiness = Get-StopReadiness -PidValue $PidValue
+    if ($readiness.status -eq 'READY') {
+        Complete-StopCleanup -Message $SuccessMessage
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($FailurePrefix)) {
+        Stop-Exp001 "$FailurePrefix $($readiness.message)"
+    }
+
+    return $false
+}
+
 function Invoke-Stop {
     Ensure-Directories
 
@@ -307,41 +378,101 @@ function Invoke-Stop {
     }
 
     $pidValue = [int] $state.pid
-    $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-    if ($null -eq $liveProcess) {
-        Write-Warn "PID가 실행 중이 아닙니다. state 파일을 정리합니다: $Script:ApplicationStateFile"
-        Clear-ApplicationState
+    $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        Stop-Exp001 "PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+    }
+    if ($processQuery.status -eq 'ABSENT') {
+        Complete-StopIfReady -PidValue $pidValue `
+            -SuccessMessage "PID가 실행 중이 아니고 port가 비어 있어 state를 정리했습니다: $pidValue" `
+            -FailurePrefix "PID는 실행 중이 아니지만 cleanup 완료 조건이 충족되지 않아 state를 보존합니다:" | Out-Null
         return
     }
 
-    if (-not (Test-ExpectedApplicationProcess -State $state)) {
+    if (-not (Test-ExpectedApplicationProcessInfo -State $state -Process $processQuery.process)) {
         Stop-Exp001 "PID가 기대한 EXP-001 application JVM과 일치하지 않습니다. PID 재사용 가능성이 있어 signal을 보내지 않습니다: $pidValue"
     }
 
     Write-Log "application 정상 종료 signal을 보냅니다. PID: $pidValue"
-    Stop-Process -Id $pidValue -ErrorAction Stop
+    try {
+        Stop-Process -Id $pidValue -ErrorAction Stop
+    } catch {
+        $stopError = $_.Exception.Message
+        Complete-StopIfReady -PidValue $pidValue `
+            -SuccessMessage 'application이 signal 전송 race 중 이미 종료되어 state를 정리했습니다.' `
+            -FailurePrefix "application 정상 종료 signal 전송에 실패했고 cleanup 완료도 확인되지 않았습니다: $stopError;" | Out-Null
+        return
+    }
 
     $deadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STOP_TIMEOUT_SECONDS'))
     while ([DateTime]::UtcNow -lt $deadline) {
-        $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-        if ($null -eq $liveProcess) {
-            Clear-ApplicationState
-            Write-Log 'application이 정상 종료되었습니다.'
+        $readiness = Get-StopReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            Complete-StopCleanup -Message 'application이 정상 종료되었습니다.'
             return
         }
-        if (-not (Test-ExpectedApplicationProcess -State $state)) {
+        if ($readiness.status -ne 'PROCESS_FOUND') {
+            Stop-Exp001 "application cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
+        }
+
+        $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+        if ($processQuery.status -eq 'UNKNOWN') {
+            Stop-Exp001 "종료 대기 중 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+        }
+        if ($processQuery.status -eq 'FOUND' -and -not (Test-ExpectedApplicationProcessInfo -State $state -Process $processQuery.process)) {
             Stop-Exp001 "종료 대기 중 PID가 기대한 process와 달라졌습니다. 강제 종료하지 않습니다: $pidValue"
         }
         Start-Sleep -Seconds 1
     }
 
-    if (-not (Test-ExpectedApplicationProcess -State $state)) {
+    $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        Stop-Exp001 "강제 종료 직전 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+    }
+    if ($processQuery.status -eq 'ABSENT') {
+        Complete-StopIfReady -PidValue $pidValue `
+            -SuccessMessage 'application이 force fallback 전에 종료되어 state를 정리했습니다.' `
+            -FailurePrefix 'application process는 종료되었지만 cleanup 완료 조건이 충족되지 않아 state를 보존합니다:' | Out-Null
+        return
+    }
+    if (-not (Test-ExpectedApplicationProcessInfo -State $state -Process $processQuery.process)) {
         Stop-Exp001 "강제 종료 직전 PID가 기대한 process와 달라졌습니다. 강제 종료하지 않습니다: $pidValue"
     }
 
     Write-Warn "정상 종료 timeout으로 강제 종료합니다. PID: $pidValue"
-    Stop-Process -Id $pidValue -Force -ErrorAction Stop
-    Clear-ApplicationState
+    try {
+        Stop-Process -Id $pidValue -Force -ErrorAction Stop
+    } catch {
+        $forceError = $_.Exception.Message
+        Complete-StopIfReady -PidValue $pidValue `
+            -SuccessMessage 'application이 force signal race 중 이미 종료되어 state를 정리했습니다.' `
+            -FailurePrefix "application 강제 종료에 실패했고 cleanup 완료도 확인되지 않았습니다: $forceError;" | Out-Null
+        return
+    }
+
+    $forceDeadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STOP_TIMEOUT_SECONDS'))
+    while ([DateTime]::UtcNow -lt $forceDeadline) {
+        $readiness = Get-StopReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            Complete-StopCleanup -Message 'application을 강제 종료하고 state를 정리했습니다.'
+            return
+        }
+        if ($readiness.status -ne 'PROCESS_FOUND') {
+            Stop-Exp001 "application 강제 종료 후 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
+        }
+
+        $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+        if ($processQuery.status -eq 'UNKNOWN') {
+            Stop-Exp001 "강제 종료 후 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+        }
+        if ($processQuery.status -eq 'FOUND' -and -not (Test-ExpectedApplicationProcessInfo -State $state -Process $processQuery.process)) {
+            Stop-Exp001 "강제 종료 후 PID가 기대한 process와 달라졌습니다. state를 보존합니다: $pidValue"
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    $readiness = Get-StopReadiness -PidValue $pidValue
+    Stop-Exp001 "application 종료 timeout 이후에도 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
 }
 
 try {

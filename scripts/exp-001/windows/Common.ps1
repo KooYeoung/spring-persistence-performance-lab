@@ -1073,29 +1073,115 @@ function New-ProcessStartIdentity {
     }
 }
 
-function Get-LiveJavaProcessInfo {
-    param([int] $PidValue)
+function New-Exp001ProcessQueryResult {
+    param(
+        [ValidateSet('FOUND', 'ABSENT', 'UNKNOWN')] [string] $Status,
+        [AllowNull()] [object] $Process = $null,
+        [string] $ErrorMessage = ''
+    )
 
-    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$PidValue" -ErrorAction SilentlyContinue
-    if ($null -eq $process) {
+    return [pscustomobject] ([ordered] @{
+        status = $Status
+        process = $Process
+        error = $ErrorMessage
+    })
+}
+
+function Test-ProcessNotFoundError {
+    param([AllowNull()] [object] $ErrorRecord)
+
+    if ($null -eq $ErrorRecord) {
+        return $false
+    }
+
+    $fullyQualifiedErrorId = [string] $ErrorRecord.FullyQualifiedErrorId
+    return ($fullyQualifiedErrorId.IndexOf('NoProcessFoundForGivenId', [StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Get-Exp001ProcessQuery {
+    param(
+        [int] $PidValue,
+        [switch] $VerifyWithGetProcess
+    )
+
+    try {
+        $cimProcesses = @(Get-CimInstance Win32_Process -Filter "ProcessId=$PidValue" -ErrorAction Stop)
+    } catch {
+        return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "Win32_Process 조회 실패: $($_.Exception.Message)"
+    }
+
+    if ($cimProcesses.Count -gt 1) {
+        return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "단일 PID에 대한 Win32_Process 조회 결과가 둘 이상입니다: $PidValue"
+    }
+
+    if ($cimProcesses.Count -eq 0) {
+        if ($VerifyWithGetProcess) {
+            try {
+                $getProcesses = @(Get-Process -Id $PidValue -ErrorAction Stop)
+                if ($getProcesses.Count -gt 0) {
+                    return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "CIM은 PID가 없다고 보고했지만 Get-Process는 PID를 찾았습니다: $PidValue"
+                }
+            } catch {
+                if (-not (Test-ProcessNotFoundError -ErrorRecord $_)) {
+                    return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "Get-Process 보조 확인 실패: $($_.Exception.Message)"
+                }
+            }
+        }
+
+        return New-Exp001ProcessQueryResult -Status 'ABSENT'
+    }
+
+    $process = $cimProcesses[0]
+    if ($VerifyWithGetProcess) {
+        try {
+            $getProcesses = @(Get-Process -Id $PidValue -ErrorAction Stop)
+            if ($getProcesses.Count -ne 1 -or [int] $getProcesses[0].Id -ne $PidValue) {
+                return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "CIM과 Get-Process PID 확인 결과가 일치하지 않습니다: $PidValue"
+            }
+        } catch {
+            if (Test-ProcessNotFoundError -ErrorRecord $_) {
+                return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "CIM은 PID를 찾았지만 Get-Process는 PID가 없다고 보고했습니다: $PidValue"
+            }
+            return New-Exp001ProcessQueryResult -Status 'UNKNOWN' -ErrorMessage "Get-Process 보조 확인 실패: $($_.Exception.Message)"
+        }
+    }
+
+    return New-Exp001ProcessQueryResult -Status 'FOUND' -Process $process
+}
+
+function ConvertTo-Exp001JavaProcessInfo {
+    param([AllowNull()] [object] $Process)
+
+    if ($null -eq $Process) {
         return $null
     }
 
-    $processName = [string] $process.Name
-    $commandLine = [string] $process.CommandLine
+    $processName = [string] $Process.Name
+    $commandLine = [string] $Process.CommandLine
     if ($processName -notmatch '^java(w)?\.exe$' -or [string]::IsNullOrWhiteSpace($commandLine)) {
         return $null
     }
 
-    $identity = New-ProcessStartIdentity -CreationDate $process.CreationDate -ProcessName $processName -CommandLine $commandLine
+    $identity = New-ProcessStartIdentity -CreationDate $Process.CreationDate -ProcessName $processName -CommandLine $commandLine
 
     return [pscustomobject] @{
-        Pid = [int] $process.ProcessId
+        Pid = [int] $Process.ProcessId
         ProcessName = $processName
         CommandLine = $commandLine
         StartTimeUtcTicks = $identity.StartTimeUtcTicks
         ProcessStartIdentity = $identity.Value
     }
+}
+
+function Get-LiveJavaProcessInfo {
+    param([int] $PidValue)
+
+    $query = Get-Exp001ProcessQuery -PidValue $PidValue
+    if ($query.status -ne 'FOUND') {
+        return $null
+    }
+
+    return ConvertTo-Exp001JavaProcessInfo -Process $query.process
 }
 
 function New-ApplicationState {
@@ -1200,6 +1286,102 @@ function Test-ExpectedApplicationProcess {
     }
 
     return $true
+}
+
+function Test-ExpectedApplicationProcessInfo {
+    param(
+        [object] $State,
+        [object] $Process
+    )
+
+    if ($null -eq $State) {
+        return $false
+    }
+    if ([string] $State.platform -ne $Script:PlatformName) {
+        return $false
+    }
+    if ([string] $State.profile -ne 'exp001') {
+        return $false
+    }
+    if ([string] $State.baseUrl -ne (Get-ConfigValue 'BASE_URL')) {
+        return $false
+    }
+
+    try {
+        $processInfo = ConvertTo-Exp001JavaProcessInfo -Process $Process
+    } catch {
+        return $false
+    }
+
+    if ($null -eq $processInfo) {
+        return $false
+    }
+    if ($processInfo.ProcessStartIdentity -ne [string] $State.processStartIdentity) {
+        return $false
+    }
+    if ($processInfo.CommandLine.IndexOf([string] $State.jarPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        return $false
+    }
+    if ($processInfo.CommandLine.IndexOf("--spring.profiles.active=$($State.profile)", [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        return $false
+    }
+
+    return $true
+}
+
+function New-Exp001PortQueryResult {
+    param(
+        [ValidateSet('FREE', 'TARGET_PID', 'OTHER_PID', 'UNKNOWN')] [string] $Status,
+        [object[]] $OwnerPids = @(),
+        [string] $ErrorMessage = ''
+    )
+
+    return [pscustomobject] ([ordered] @{
+        status = $Status
+        ownerPids = @($OwnerPids)
+        error = $ErrorMessage
+    })
+}
+
+function Format-Exp001PortOwnerPids {
+    param([object[]] $OwnerPids)
+
+    $values = @($OwnerPids | Where-Object { $null -ne $_ } | ForEach-Object { [string] $_ })
+    if ($values.Count -eq 0) {
+        return ''
+    }
+
+    return ($values -join ', ')
+}
+
+function Get-Exp001PortQuery {
+    param(
+        [int] $Port,
+        [int] $TargetPid
+    )
+
+    try {
+        $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+    } catch {
+        return New-Exp001PortQueryResult -Status 'UNKNOWN' -ErrorMessage "TCP listener 조회 실패: $($_.Exception.Message)"
+    }
+
+    try {
+        $portListeners = @($listeners | Where-Object { [int] $_.LocalPort -eq $Port })
+        if ($portListeners.Count -eq 0) {
+            return New-Exp001PortQueryResult -Status 'FREE'
+        }
+
+        $ownerPids = @($portListeners | ForEach-Object { [int] $_.OwningProcess } | Sort-Object -Unique)
+        $targetListeners = @($portListeners | Where-Object { [int] $_.OwningProcess -eq $TargetPid })
+        if ($targetListeners.Count -gt 0) {
+            return New-Exp001PortQueryResult -Status 'TARGET_PID' -OwnerPids $ownerPids
+        }
+
+        return New-Exp001PortQueryResult -Status 'OTHER_PID' -OwnerPids $ownerPids
+    } catch {
+        return New-Exp001PortQueryResult -Status 'UNKNOWN' -ErrorMessage "TCP listener 결과 해석 실패: $($_.Exception.Message)"
+    }
 }
 
 function Invoke-StartupFailureCleanup {
