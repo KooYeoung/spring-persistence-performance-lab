@@ -13,6 +13,7 @@ $Script:ApplicationStateFile = Join-Path $Script:StateDir 'application.json'
 $Script:ApplicationStdoutLog = Join-Path $Script:StateDir 'application.out.log'
 $Script:ApplicationStderrLog = Join-Path $Script:StateDir 'application.err.log'
 $Script:JqLockFile = Join-Path $Script:Exp001Root 'tools\jq.lock'
+$Script:JdkLockFile = Join-Path $Script:Exp001Root 'tools\jdk.lock'
 $Script:ValidateResponseFilter = Join-Path $Script:Exp001Root 'shared\validate-response.jq'
 $Script:SummaryFilter = Join-Path $Script:Exp001Root 'shared\summary.jq'
 $Script:PostgresService = 'persistence-lab-postgres'
@@ -20,6 +21,7 @@ $Script:PlatformName = 'windows'
 $Script:Config = @{}
 $Script:ProjectRootAbs = $null
 $Script:ResultRootAbs = $null
+$Script:JdkRuntime = $null
 
 function Write-Log {
     param([string] $Message)
@@ -75,6 +77,7 @@ function Initialize-Exp001 {
     $defaults = @{
         PROJECT_ROOT = '../..'
         BASE_URL = 'http://localhost:8080'
+        SERVER_PORT = ''
         DB_HOST = 'localhost'
         DB_PORT = '55432'
         DB_NAME = 'persistence_lab'
@@ -207,33 +210,15 @@ function Require-Command {
     }
 }
 
-function Get-JavaExecutablePath {
-    $commands = @(Get-Command 'java.exe' -CommandType Application -ErrorAction SilentlyContinue)
-    if ($commands.Count -eq 0) {
-        Stop-Exp001 '필수 command를 찾을 수 없습니다: java'
-    }
-
-    $command = $commands[0]
-    $javaPath = [string] $command.Path
-    if ([string]::IsNullOrWhiteSpace($javaPath)) {
-        $javaPath = [string] $command.Source
-    }
-    if ([string]::IsNullOrWhiteSpace($javaPath)) {
-        $javaPath = [string] $command.Definition
-    }
-    if ([string]::IsNullOrWhiteSpace($javaPath) -or -not (Test-Path -LiteralPath $javaPath)) {
-        Stop-Exp001 "java.exe 경로를 확인할 수 없습니다: $javaPath"
-    }
-
-    return $javaPath
-}
-
-function Invoke-JavaVersionCommand {
-    param([string] $JavaPath)
+function Invoke-VersionCommand {
+    param(
+        [string] $FilePath,
+        [string] $Arguments = '-version'
+    )
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $JavaPath
-    $startInfo.Arguments = '-version'
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $Arguments
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
@@ -245,45 +230,445 @@ function Invoke-JavaVersionCommand {
     try {
         [void] $process.Start()
     } catch {
-        Stop-Exp001 "java -version 실행에 실패했습니다: $($_.Exception.Message)"
+        Stop-Exp001 "$FilePath $Arguments 실행에 실패했습니다: $($_.Exception.Message)"
     }
 
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
 
-    return [pscustomobject] @{
-        Stdout = $stdout
-        Stderr = $stderr
-        ExitCode = $process.ExitCode
+        return [pscustomobject] @{
+            Stdout = $stdout
+            Stderr = $stderr
+            ExitCode = $process.ExitCode
+        }
+    } finally {
+        $process.Dispose()
     }
 }
 
-function Get-JavaMajorVersion {
+function Join-VersionOutput {
+    param([object] $Result)
+
+    return (@($Result.Stdout, $Result.Stderr) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { $_.Trim() } |
+        Out-String).Trim()
+}
+
+function Get-JavaVersionNumber {
     param([string] $VersionText)
 
     if ([string]::IsNullOrWhiteSpace($VersionText)) {
         return $null
     }
 
-    $match = [regex]::Match($VersionText, 'version\s+"([0-9]+)(?:[._][^"]*)?"')
+    $match = [regex]::Match($VersionText, 'version\s+"([0-9]+(?:[._][0-9]+)*(?:[-+][^"]*)?)"')
+    if (-not $match.Success) {
+        $match = [regex]::Match($VersionText, 'javac\s+([0-9]+(?:[._][0-9]+)*(?:[-+][^\s]*)?)')
+    }
     if (-not $match.Success) {
         return $null
     }
 
-    $major = 0
-    if (-not [int]::TryParse($match.Groups[1].Value, [ref] $major)) {
+    return $match.Groups[1].Value
+}
+
+function Get-JavaMajorVersion {
+    param([string] $VersionText)
+
+    $version = Get-JavaVersionNumber -VersionText $VersionText
+    if ([string]::IsNullOrWhiteSpace($version)) {
         return $null
     }
 
+    $major = 0
+    $majorText = ($version -split '[._]')[0]
+    if (-not [int]::TryParse($majorText, [ref] $major)) {
+        return $null
+    }
     return $major
 }
 
+function Read-JdkLock {
+    $lock = Read-KeyValueFile -Path $Script:JdkLockFile
+    foreach ($key in @(
+        'vendor',
+        'java_version',
+        'asset_version',
+        'windows_x64_url',
+        'windows_x64_sha256',
+        'windows_x64_archive_type',
+        'windows_x64_jdk_home',
+        'macos_x64_url',
+        'macos_x64_sha256',
+        'macos_x64_archive_type',
+        'macos_x64_jdk_home',
+        'macos_arm64_url',
+        'macos_arm64_sha256',
+        'macos_arm64_archive_type',
+        'macos_arm64_jdk_home'
+    )) {
+        if (-not $lock.ContainsKey($key)) {
+            Stop-Exp001 "JDK lock에 필요한 key가 없습니다: $key"
+        }
+    }
+    if ($lock['vendor'] -ne 'Amazon Corretto') {
+        Stop-Exp001 "지원하지 않는 JDK vendor입니다: $($lock['vendor'])"
+    }
+    return $lock
+}
+
+function Get-JdkPlatformKey {
+    $arch = [Environment]::GetEnvironmentVariable('PROCESSOR_ARCHITECTURE')
+    if ($arch -ne 'AMD64') {
+        Stop-Exp001 "지원하지 않는 Windows JDK architecture입니다: $arch"
+    }
+    return 'windows_x64'
+}
+
+function Get-JdkRuntimeRoot {
+    return Join-Path $Script:ToolsDir 'jdk\windows-x64'
+}
+
+function Get-JdkHomeRelativePath {
+    param(
+        [hashtable] $Lock,
+        [string] $PlatformKey = (Get-JdkPlatformKey)
+    )
+
+    return ([string] $Lock["${PlatformKey}_jdk_home"]).Replace('/', '\')
+}
+
+function Get-JdkRuntimeDir {
+    param([hashtable] $Lock)
+
+    return Join-Path (Get-JdkRuntimeRoot) (Get-JdkHomeRelativePath -Lock $Lock)
+}
+
+function Get-JdkTopLevelRuntimeDir {
+    param([hashtable] $Lock)
+
+    $relativeHome = Get-JdkHomeRelativePath -Lock $Lock
+    $topLevelName = ($relativeHome -split '[\\/]')[0]
+    return Join-Path (Get-JdkRuntimeRoot) $topLevelName
+}
+
+function Get-JdkReleaseValue {
+    param(
+        [string] $ReleaseFile,
+        [string] $Key
+    )
+
+    $pattern = '^' + [regex]::Escape($Key) + '=(.*)$'
+    foreach ($rawLine in Get-Content -LiteralPath $ReleaseFile -Encoding UTF8) {
+        $match = [regex]::Match($rawLine, $pattern)
+        if ($match.Success) {
+            $value = $match.Groups[1].Value.Trim()
+            if ($value.StartsWith('"') -and $value.EndsWith('"') -and $value.Length -ge 2) {
+                return $value.Substring(1, $value.Length - 2)
+            }
+            return $value
+        }
+    }
+
+    return ''
+}
+
+function Test-LockedJdkHome {
+    param(
+        [string] $JdkHome,
+        [hashtable] $Lock
+    )
+
+    if ([string]::IsNullOrWhiteSpace($JdkHome)) {
+        return $null
+    }
+
+    $resolvedHome = [System.IO.Path]::GetFullPath($JdkHome)
+    $javaPath = Join-Path $resolvedHome 'bin\java.exe'
+    $javacPath = Join-Path $resolvedHome 'bin\javac.exe'
+    $releaseFile = Join-Path $resolvedHome 'release'
+    if (-not (Test-Path -LiteralPath $resolvedHome) `
+        -or -not (Test-Path -LiteralPath $javaPath) `
+        -or -not (Test-Path -LiteralPath $javacPath) `
+        -or -not (Test-Path -LiteralPath $releaseFile)) {
+        return $null
+    }
+
+    if ((Get-JdkReleaseValue -ReleaseFile $releaseFile -Key 'IMPLEMENTOR') -ne 'Amazon.com Inc.') {
+        return $null
+    }
+    if ((Get-JdkReleaseValue -ReleaseFile $releaseFile -Key 'IMPLEMENTOR_VERSION') -ne "Corretto-$($Lock['asset_version'])") {
+        return $null
+    }
+    if ((Get-JdkReleaseValue -ReleaseFile $releaseFile -Key 'JAVA_VERSION') -ne $Lock['java_version']) {
+        return $null
+    }
+
+    $javaResult = Invoke-VersionCommand -FilePath $javaPath
+    $javaText = Join-VersionOutput -Result $javaResult
+    if ($javaResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($javaText)) {
+        return $null
+    }
+
+    $javacResult = Invoke-VersionCommand -FilePath $javacPath
+    $javacText = Join-VersionOutput -Result $javacResult
+    if ($javacResult.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($javacText)) {
+        return $null
+    }
+
+    $javaVersion = Get-JavaVersionNumber -VersionText $javaText
+    $javacVersion = Get-JavaVersionNumber -VersionText $javacText
+    if ($javaVersion -ne $Lock['java_version'] -or $javacVersion -ne $Lock['java_version']) {
+        return $null
+    }
+    if ((Get-JavaMajorVersion -VersionText $javaText) -ne 21 -or (Get-JavaMajorVersion -VersionText $javacText) -ne 21) {
+        return $null
+    }
+
+    return [pscustomobject] @{
+        Home = $resolvedHome
+        JavaPath = $javaPath
+        JavacPath = $javacPath
+        VersionText = $javaText
+    }
+}
+
+function Assert-LockedJdkHome {
+    param(
+        [string] $JdkHome,
+        [hashtable] $Lock
+    )
+
+    $jdk = Test-LockedJdkHome -JdkHome $JdkHome -Lock $Lock
+    if ($null -eq $jdk) {
+        Stop-Exp001 "JDK lock과 일치하지 않는 JDK입니다: $JdkHome"
+    }
+    return $jdk
+}
+
+function Find-LocalLockedJdk {
+    param([hashtable] $Lock)
+
+    $candidateHomes = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($env:JAVA_HOME)) {
+        $candidateHomes.Add($env:JAVA_HOME)
+    }
+
+    foreach ($command in @(Get-Command 'java.exe' -CommandType Application -All -ErrorAction SilentlyContinue)) {
+        if (-not [string]::IsNullOrWhiteSpace($command.Path)) {
+            $candidateHomes.Add((Split-Path -Parent (Split-Path -Parent $command.Path)))
+        }
+    }
+
+    foreach ($root in @(
+        (Join-Path $env:USERPROFILE '.jdks'),
+        'C:\Program Files\Amazon Corretto',
+        'C:\Program Files\Eclipse Adoptium',
+        'C:\Program Files\Microsoft',
+        'C:\Program Files\Java'
+    )) {
+        if (Test-Path -LiteralPath $root) {
+            foreach ($java in @(Get-ChildItem -LiteralPath $root -Recurse -Filter 'java.exe' -ErrorAction SilentlyContinue)) {
+                if ($java.FullName -match '\\bin\\java\.exe$') {
+                    $candidateHomes.Add((Split-Path -Parent (Split-Path -Parent $java.FullName)))
+                }
+            }
+        }
+    }
+
+    $seen = @{}
+    foreach ($candidate in $candidateHomes) {
+        $full = [System.IO.Path]::GetFullPath($candidate)
+        if ($seen.ContainsKey($full)) {
+            continue
+        }
+        $seen[$full] = $true
+        $jdk = Test-LockedJdkHome -JdkHome $full -Lock $Lock
+        if ($null -ne $jdk) {
+            return $jdk
+        }
+    }
+
+    return $null
+}
+
+function Find-ExtractedJdkHome {
+    param(
+        [string] $ExtractDir,
+        [hashtable] $Lock
+    )
+
+    $expectedHome = Join-Path $ExtractDir (Get-JdkHomeRelativePath -Lock $Lock)
+    return Test-LockedJdkHome -JdkHome $expectedHome -Lock $Lock
+}
+
+function Install-LockedJdk {
+    param([hashtable] $Lock)
+
+    $platformKey = Get-JdkPlatformKey
+    $url = [string] $Lock["${platformKey}_url"]
+    $expectedSha = [string] $Lock["${platformKey}_sha256"]
+    $archiveType = [string] $Lock["${platformKey}_archive_type"]
+    if ($archiveType -ne 'zip') {
+        Stop-Exp001 "지원하지 않는 Windows JDK archive type입니다: $archiveType"
+    }
+
+    $runtimeDir = Get-JdkRuntimeDir -Lock $Lock
+    $runtimeRoot = Get-JdkRuntimeRoot
+    $runtimeTopLevelDir = Get-JdkTopLevelRuntimeDir -Lock $Lock
+    New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+
+    if (Test-Path -LiteralPath $runtimeDir) {
+        return Assert-LockedJdkHome -JdkHome $runtimeDir -Lock $Lock
+    }
+
+    $archive = Join-Path $runtimeRoot "amazon-corretto-$($Lock['asset_version'])-$platformKey.$archiveType.tmp.$PID"
+    $extractDir = Join-Path $runtimeRoot "extract-$PID"
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Write-Log "Amazon Corretto JDK $($Lock['java_version']) 다운로드: $platformKey"
+        Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing -ErrorAction Stop
+
+        if (-not (Test-Path -LiteralPath $archive)) {
+            Stop-Exp001 "JDK archive 다운로드 결과 파일이 없습니다: $archive"
+        }
+
+        $actualSha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualSha -ne $expectedSha) {
+            Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+            Stop-Exp001 "downloaded JDK checksum이 일치하지 않습니다. expected=$expectedSha actual=$actualSha"
+        }
+
+        New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+        Expand-Archive -LiteralPath $archive -DestinationPath $extractDir -Force
+        $extractedJdk = Find-ExtractedJdkHome -ExtractDir $extractDir -Lock $Lock
+        if ($null -eq $extractedJdk) {
+            Stop-Exp001 '압축 해제된 JDK가 lock 조건과 일치하지 않습니다.'
+        }
+        if (Test-Path -LiteralPath $runtimeDir) {
+            Stop-Exp001 "JDK final runtime directory가 이미 존재합니다: $runtimeDir"
+        }
+        if (Test-Path -LiteralPath $runtimeTopLevelDir) {
+            Stop-Exp001 "JDK final runtime top-level directory가 이미 존재합니다: $runtimeTopLevelDir"
+        }
+
+        $sourceTopLevelDir = Join-Path $extractDir (($Lock["${platformKey}_jdk_home"] -split '[\\/]')[0])
+        Move-Item -LiteralPath $sourceTopLevelDir -Destination $runtimeTopLevelDir
+        $verifiedJdk = Assert-LockedJdkHome -JdkHome $runtimeDir -Lock $Lock
+        Write-Log "locked JDK 준비 완료: $runtimeDir"
+        return $verifiedJdk
+    } catch {
+        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    } finally {
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Resolve-LockedJdk {
+    param([switch] $AllowDownload)
+
+    if ($null -ne $Script:JdkRuntime) {
+        return $Script:JdkRuntime
+    }
+
+    $lock = Read-JdkLock
+    $localJdk = Find-LocalLockedJdk -Lock $lock
+    if ($null -ne $localJdk) {
+        Write-Log "local locked JDK 확인 완료: $($localJdk.Home)"
+        $Script:JdkRuntime = $localJdk
+        return $Script:JdkRuntime
+    }
+
+    $runtimeDir = Get-JdkRuntimeDir -Lock $lock
+    if (Test-Path -LiteralPath $runtimeDir) {
+        $Script:JdkRuntime = Assert-LockedJdkHome -JdkHome $runtimeDir -Lock $lock
+        Write-Log "cached locked JDK 확인 완료: $runtimeDir"
+        return $Script:JdkRuntime
+    }
+
+    if ($AllowDownload) {
+        $Script:JdkRuntime = Install-LockedJdk -Lock $lock
+        return $Script:JdkRuntime
+    }
+
+    Stop-Exp001 "lock과 일치하는 Amazon Corretto JDK $($lock['java_version'])를 찾지 못했습니다. 먼저 prepare를 실행하세요."
+}
+
+function Assert-Java21 {
+    Resolve-LockedJdk | Out-Null
+}
+
+function Invoke-WithJdkEnvironment {
+    param(
+        [object] $Jdk,
+        [scriptblock] $Command
+    )
+
+    $oldJavaHome = [Environment]::GetEnvironmentVariable('JAVA_HOME', 'Process')
+    $oldPath = [Environment]::GetEnvironmentVariable('PATH', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('JAVA_HOME', $Jdk.Home, 'Process')
+        [Environment]::SetEnvironmentVariable('PATH', "$(Join-Path $Jdk.Home 'bin');$oldPath", 'Process')
+        & $Command
+    } finally {
+        [Environment]::SetEnvironmentVariable('JAVA_HOME', $oldJavaHome, 'Process')
+        [Environment]::SetEnvironmentVariable('PATH', $oldPath, 'Process')
+    }
+}
+
 function Require-DockerCompose {
-    Require-Command 'docker'
+    $docker = Get-Command 'docker' -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -eq $docker) {
+        $os = [Environment]::OSVersion.VersionString
+        Stop-Exp001 "Docker command를 찾을 수 없습니다. Docker Desktop 설치가 필요합니다. 현재 운영체제: $os"
+    }
+
+    & docker info *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Exp001 'Docker Engine에 연결할 수 없습니다. Docker Desktop을 실행하세요. 권한 또는 Engine 연결 문제일 수 있습니다.'
+    }
+
     & docker compose version *> $null
     if ($LASTEXITCODE -ne 0) {
-        Stop-Exp001 'docker compose를 사용할 수 없습니다. Docker Desktop과 Compose plugin을 확인하세요.'
+        Stop-Exp001 'docker compose를 사용할 수 없습니다. Docker Desktop의 Compose plugin을 확인하세요.'
+    }
+
+    $composeFile = Join-Path $Script:ProjectRootAbs 'docker-compose.yml'
+    $services = & docker compose -f $composeFile config --services 2>$null
+    if ($LASTEXITCODE -ne 0 -or @($services) -notcontains $Script:PostgresService) {
+        Stop-Exp001 "Docker Compose PostgreSQL service를 확인할 수 없습니다: $Script:PostgresService"
+    }
+
+    $containerIds = @(& docker compose -f $composeFile ps -q $Script:PostgresService 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($LASTEXITCODE -ne 0 -or $containerIds.Count -eq 0) {
+        Stop-Exp001 "Docker Compose PostgreSQL service가 실행 중이 아닙니다. 먼저 docker compose up -d를 실행하세요: $Script:PostgresService"
+    }
+
+    $containerId = ([string] $containerIds[0]).Trim()
+    $runningOutput = @(& docker inspect --format '{{.State.Running}}' $containerId 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $runningOutput.Count -eq 0) {
+        Stop-Exp001 "Docker Compose PostgreSQL container 상태를 확인할 수 없습니다: $Script:PostgresService"
+    }
+    $running = ([string] $runningOutput[0]).Trim()
+    if ($running -ne 'true') {
+        Stop-Exp001 "Docker Compose PostgreSQL service가 running 상태가 아닙니다: $Script:PostgresService"
+    }
+
+    $healthOutput = @(& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $containerId 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $healthOutput.Count -eq 0) {
+        Stop-Exp001 "Docker Compose PostgreSQL health를 확인할 수 없습니다: $Script:PostgresService"
+    }
+    $health = ([string] $healthOutput[0]).Trim()
+    if ($health -ne 'healthy') {
+        Stop-Exp001 "Docker Compose PostgreSQL service health가 healthy가 아닙니다: $Script:PostgresService ($health)"
     }
 }
 
@@ -300,30 +685,11 @@ function Assert-ProjectRoot {
     }
 }
 
-function Assert-Java21 {
-    $javaPath = Get-JavaExecutablePath
-    $result = Invoke-JavaVersionCommand -JavaPath $javaPath
-    $versionText = @($result.Stdout, $result.Stderr) |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        ForEach-Object { $_.Trim() } |
-        Out-String
-    $versionText = $versionText.Trim()
-
-    if ($result.ExitCode -ne 0) {
-        Stop-Exp001 "java -version 실행이 실패했습니다. exit code: $($result.ExitCode), output: $versionText"
-    }
-
-    $majorVersion = Get-JavaMajorVersion -VersionText $versionText
-    if ($null -eq $majorVersion) {
-        Stop-Exp001 "Java version 문자열을 해석할 수 없습니다: $versionText"
-    }
-    if ($majorVersion -ne 21) {
-        Stop-Exp001 "Java 21 runtime이 필요합니다. 현재 java -version: $versionText"
-    }
-}
-
 function Get-ServerPort {
-    $serverPort = [Environment]::GetEnvironmentVariable('SERVER_PORT')
+    $serverPort = Get-ConfigValue 'SERVER_PORT'
+    if ([string]::IsNullOrWhiteSpace($serverPort)) {
+        $serverPort = [Environment]::GetEnvironmentVariable('SERVER_PORT')
+    }
     if (-not [string]::IsNullOrWhiteSpace($serverPort)) {
         return $serverPort
     }
@@ -439,11 +805,7 @@ function Assert-AppEndpointRegistered {
     }
 }
 
-function Assert-ConfiguredDbGate {
-    if ((Get-ConfigValue 'ALLOW_DESTRUCTIVE_RESET') -ne 'true') {
-        Stop-Exp001 'ALLOW_DESTRUCTIVE_RESET가 true가 아니므로 reset과 run을 중단합니다.'
-    }
-
+function Assert-ConfiguredDbIdentity {
     $dbHost = Get-ConfigValue 'DB_HOST'
     if ($dbHost -ne 'localhost' -and $dbHost -ne '127.0.0.1') {
         Stop-Exp001 "DB_HOST가 허용된 local host가 아닙니다: $dbHost"
@@ -457,6 +819,12 @@ function Assert-ConfiguredDbGate {
     }
     if ((Get-ConfigValue 'DB_USER') -ne 'lab_user') {
         Stop-Exp001 "DB_USER가 lab_user가 아닙니다: $(Get-ConfigValue 'DB_USER')"
+    }
+}
+
+function Assert-DestructiveResetApproved {
+    if ((Get-ConfigValue 'ALLOW_DESTRUCTIVE_RESET') -ne 'true') {
+        Stop-Exp001 'ALLOW_DESTRUCTIVE_RESET가 true가 아니므로 reset과 run을 중단합니다.'
     }
 }
 
@@ -514,13 +882,19 @@ function Assert-ActualDbGate {
     }
 }
 
-function Assert-DbSafetyGate {
-    Assert-ConfiguredDbGate
+function Assert-DbIdentityGate {
+    Assert-ConfiguredDbIdentity
+    Assert-ActualDbGate
+}
+
+function Assert-DestructiveResetGate {
+    Assert-DestructiveResetApproved
+    Assert-ConfiguredDbIdentity
     Assert-ActualDbGate
 }
 
 function Reset-BenchmarkTable {
-    Assert-DbSafetyGate
+    Assert-DestructiveResetGate
     Invoke-Psql -Sql 'TRUNCATE TABLE benchmark_record RESTART IDENTITY;' | Out-Null
 }
 

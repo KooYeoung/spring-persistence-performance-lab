@@ -13,7 +13,7 @@ EXP-001 macOS harness
 Usage: ./scripts/exp-001/macos/exp001.sh <action> [run-directory]
 
 Actions:
-  prepare    .env, .state, result root와 portable jq를 준비한다.
+  prepare    .env, .state, result root, portable jq와 locked JDK를 준비한다.
   start      bootJar를 생성하고 exp001 profile application JVM을 시작한다.
   check      endpoint, Docker Compose PostgreSQL identity와 Safety Gate를 확인한다.
   benchmark  warm-up과 official 6 round를 실행한다.
@@ -26,9 +26,7 @@ EOF
 prepare() {
   assert_project_root
   ensure_directories
-  require_command java
   require_command git
-  require_docker_compose
 
   if [[ ! -f "$EXP001_ENV_FILE" ]]; then
     cp "$EXP001_ROOT/.env.example" "$EXP001_ENV_FILE"
@@ -38,6 +36,8 @@ prepare() {
   fi
 
   install_or_verify_jq
+  resolve_locked_jdk --allow-download
+  require_docker_compose
 
   if [[ ! -x "$SCRIPT_DIR/exp001.sh" ]]; then
     warn "실행 권한이 없으면 bash로 실행하세요: bash $SCRIPT_DIR/exp001.sh"
@@ -49,7 +49,7 @@ prepare() {
 start() {
   assert_project_root
   ensure_directories
-  assert_java21
+  resolve_locked_jdk
   require_command git
   require_command curl
   require_docker_compose
@@ -77,7 +77,7 @@ start() {
 
   [[ -x "$PROJECT_ROOT_ABS/gradlew" ]] || die "Gradle Wrapper 실행 권한을 확인하세요: $PROJECT_ROOT_ABS/gradlew"
   log "bootJar를 생성합니다."
-  (cd "$PROJECT_ROOT_ABS" && ./gradlew --no-daemon --max-workers=1 bootJar)
+  (cd "$PROJECT_ROOT_ABS" && run_with_locked_jdk ./gradlew --no-daemon --max-workers=1 bootJar)
 
   local jars=()
   local jar
@@ -108,7 +108,7 @@ start() {
   local pid
   original_dir="$(pwd -P)"
   cd "$PROJECT_ROOT_ABS"
-  SERVER_PORT="$server_port" nohup java \
+  SERVER_PORT="$server_port" nohup "$LOCKED_JDK_JAVA" \
     -Xms2g \
     -Xmx2g \
     -XX:+UseG1GC \
@@ -147,7 +147,7 @@ start() {
 check_environment() {
   assert_project_root
   ensure_directories
-  assert_java21
+  resolve_locked_jdk
   require_command git
   require_command curl
   require_docker_compose
@@ -160,7 +160,7 @@ check_environment() {
   require_app_endpoint_registered
   log "application reachable: $BASE_URL"
 
-  require_db_safety_gate
+  require_db_identity_gate
   log "PostgreSQL configured identity와 actual identity를 확인했습니다."
   log "official timing 중 debugger, SQL logging, Hibernate statistics, profiler는 OFF 상태로 운영하세요."
 }
@@ -200,6 +200,7 @@ run_step() {
 benchmark() {
   assert_project_root
   ensure_directories
+  resolve_locked_jdk
   require_command git
   require_command curl
   require_docker_compose

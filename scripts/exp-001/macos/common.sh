@@ -9,6 +9,7 @@ EXP001_TOOLS_DIR="$EXP001_ROOT/.tools"
 EXP001_APPLICATION_STATE_FILE="$EXP001_STATE_DIR/application.json"
 EXP001_APPLICATION_LOG="$EXP001_STATE_DIR/application.log"
 EXP001_JQ_LOCK_FILE="$EXP001_ROOT/tools/jq.lock"
+EXP001_JDK_LOCK_FILE="$EXP001_ROOT/tools/jdk.lock"
 EXP001_VALIDATE_RESPONSE_FILTER="$EXP001_ROOT/shared/validate-response.jq"
 EXP001_SUMMARY_FILTER="$EXP001_ROOT/shared/summary.jq"
 EXP001_POSTGRES_SERVICE="persistence-lab-postgres"
@@ -16,6 +17,7 @@ EXP001_PLATFORM_NAME="macos"
 
 PROJECT_ROOT="../.."
 BASE_URL="http://localhost:8080"
+SERVER_PORT=""
 DB_HOST="localhost"
 DB_PORT="55432"
 DB_NAME="persistence_lab"
@@ -32,6 +34,9 @@ ALLOW_DESTRUCTIVE_RESET="false"
 RESULT_ROOT="results/exp-001"
 PROJECT_ROOT_ABS=""
 RESULT_ROOT_ABS=""
+LOCKED_JDK_HOME=""
+LOCKED_JDK_JAVA=""
+LOCKED_JDK_JAVAC=""
 
 timestamp() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -61,6 +66,7 @@ set_config_value() {
   case "$key" in
     PROJECT_ROOT) PROJECT_ROOT="$value" ;;
     BASE_URL) BASE_URL="$value" ;;
+    SERVER_PORT) SERVER_PORT="$value" ;;
     DB_HOST) DB_HOST="$value" ;;
     DB_PORT) DB_PORT="$value" ;;
     DB_NAME) DB_NAME="$value" ;;
@@ -167,7 +173,33 @@ require_command() {
 
 require_docker_compose() {
   require_command docker
-  docker compose version >/dev/null 2>&1 || die "docker compose를 사용할 수 없습니다. Docker Desktop과 Compose plugin을 확인하세요."
+  docker info >/dev/null 2>&1 || die "Docker Engine에 연결할 수 없습니다. Docker Desktop을 실행하세요. 권한 또는 Engine 연결 문제일 수 있습니다."
+  docker compose version >/dev/null 2>&1 || die "docker compose를 사용할 수 없습니다. Docker Desktop의 Compose plugin을 확인하세요."
+
+  local compose_file="$PROJECT_ROOT_ABS/docker-compose.yml"
+  local services
+  services="$(docker compose -f "$compose_file" config --services 2>/dev/null)" \
+    || die "Docker Compose service 목록을 확인할 수 없습니다: $compose_file"
+  printf '%s\n' "$services" | grep -Fx "$EXP001_POSTGRES_SERVICE" >/dev/null \
+    || die "Docker Compose PostgreSQL service를 확인할 수 없습니다: $EXP001_POSTGRES_SERVICE"
+
+  local container_id
+  container_id="$(docker compose -f "$compose_file" ps -q "$EXP001_POSTGRES_SERVICE" 2>/dev/null | sed -n '1p')" \
+    || die "Docker Compose PostgreSQL service 상태를 확인할 수 없습니다: $EXP001_POSTGRES_SERVICE"
+  [[ "$container_id" != "" ]] \
+    || die "Docker Compose PostgreSQL service가 실행 중이 아닙니다. 먼저 docker compose up -d를 실행하세요: $EXP001_POSTGRES_SERVICE"
+
+  local running
+  running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null | sed -n '1p')" \
+    || die "Docker Compose PostgreSQL container 상태를 확인할 수 없습니다: $EXP001_POSTGRES_SERVICE"
+  [[ "$running" == "true" ]] \
+    || die "Docker Compose PostgreSQL service가 running 상태가 아닙니다: $EXP001_POSTGRES_SERVICE"
+
+  local health
+  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id" 2>/dev/null | sed -n '1p')" \
+    || die "Docker Compose PostgreSQL health를 확인할 수 없습니다: $EXP001_POSTGRES_SERVICE"
+  [[ "$health" == "healthy" ]] \
+    || die "Docker Compose PostgreSQL service health가 healthy가 아닙니다: $EXP001_POSTGRES_SERVICE ($health)"
 }
 
 ensure_directories() {
@@ -179,18 +211,8 @@ assert_project_root() {
   [[ -f "$PROJECT_ROOT_ABS/AGENTS.md" ]] || die "project root에서 AGENTS.md를 찾을 수 없습니다: $PROJECT_ROOT_ABS"
 }
 
-assert_java21() {
-  require_command java
-  local version_text
-  version_text="$(java -version 2>&1 | sed -n '1p')"
-  case "$version_text" in
-    *'version "21.'*) ;;
-    *) die "Java 21 runtime이 필요합니다. 현재 java -version: $version_text" ;;
-  esac
-}
-
 configured_server_port() {
-  if [[ "${SERVER_PORT:-}" != "" ]]; then
+  if [[ "$SERVER_PORT" != "" ]]; then
     printf '%s\n' "$SERVER_PORT"
     return
   fi
@@ -204,25 +226,387 @@ configured_server_port() {
   fi
 }
 
-lock_value() {
-  local expected_key="$1"
+lock_file_value() {
+  local lock_file="$1"
+  local expected_key="$2"
   local line
   local key
   local value
+
+  [[ -f "$lock_file" ]] || return 1
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
     line="$(trim "$line")"
     [[ "$line" == "" || "${line#\#}" != "$line" ]] && continue
+    [[ "$line" == *"="* ]] || die "KEY=VALUE 형식이 아닌 line입니다: $lock_file"
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
     if [[ "$key" == "$expected_key" ]]; then
       printf '%s\n' "$value"
       return
     fi
-  done <"$EXP001_JQ_LOCK_FILE"
+  done <"$lock_file"
 
   return 1
+}
+
+lock_value() {
+  local expected_key="$1"
+  lock_file_value "$EXP001_JQ_LOCK_FILE" "$expected_key"
+}
+
+jdk_lock_value() {
+  local expected_key="$1"
+  lock_file_value "$EXP001_JDK_LOCK_FILE" "$expected_key"
+}
+
+require_jdk_lock_key() {
+  local key="$1"
+  jdk_lock_value "$key" >/dev/null || die "JDK lock에 필요한 key가 없습니다: $key"
+}
+
+jdk_platform_key() {
+  local machine
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64) printf 'macos_x64\n' ;;
+    arm64) printf 'macos_arm64\n' ;;
+    *) die "지원하지 않는 macOS JDK architecture입니다: $machine" ;;
+  esac
+}
+
+jdk_platform_dir() {
+  local platform_key="$1"
+  case "$platform_key" in
+    macos_x64) printf 'macos-x64\n' ;;
+    macos_arm64) printf 'macos-arm64\n' ;;
+    *) die "지원하지 않는 JDK platform key입니다: $platform_key" ;;
+  esac
+}
+
+require_jdk_lock() {
+  local platform_key="$1"
+  local key
+
+  for key in \
+    vendor \
+    java_version \
+    asset_version \
+    "${platform_key}_url" \
+    "${platform_key}_sha256" \
+    "${platform_key}_archive_type" \
+    "${platform_key}_jdk_home"; do
+    require_jdk_lock_key "$key"
+  done
+
+  [[ "$(jdk_lock_value vendor)" == "Amazon Corretto" ]] \
+    || die "지원하지 않는 JDK vendor입니다: $(jdk_lock_value vendor)"
+}
+
+jdk_runtime_root() {
+  local platform_key="$1"
+  printf '%s\n' "$EXP001_TOOLS_DIR/jdk/$(jdk_platform_dir "$platform_key")"
+}
+
+jdk_runtime_home() {
+  local platform_key="$1"
+  printf '%s\n' "$(jdk_runtime_root "$platform_key")/$(jdk_lock_value "${platform_key}_jdk_home")"
+}
+
+jdk_top_level_name() {
+  local platform_key="$1"
+  local jdk_home
+  jdk_home="$(jdk_lock_value "${platform_key}_jdk_home")"
+  printf '%s\n' "${jdk_home%%/*}"
+}
+
+jdk_major_version() {
+  local version="$1"
+  printf '%s\n' "${version%%.*}"
+}
+
+jvm_version_number() {
+  local version_text="$1"
+  local version
+  version="$(printf '%s\n' "$version_text" | sed -n 's/.*version "\([^"]*\)".*/\1/p' | sed -n '1p')"
+  if [[ "$version" == "" ]]; then
+    version="$(printf '%s\n' "$version_text" | sed -n 's/^javac \([^[:space:]]*\).*/\1/p' | sed -n '1p')"
+  fi
+  printf '%s\n' "$version"
+}
+
+jdk_release_value() {
+  local release_file="$1"
+  local key="$2"
+  sed -n "s/^${key}=\"\\(.*\\)\"$/\\1/p" "$release_file" | sed -n '1p'
+}
+
+test_locked_jdk_home() {
+  local candidate="$1"
+  local java_version
+  local asset_version
+  local home
+  local java_bin
+  local javac_bin
+  local release_file
+  local java_text
+  local javac_text
+  local actual_java_version
+  local actual_javac_version
+
+  [[ "$candidate" != "" && -d "$candidate" ]] || return 1
+  home="$(cd "$candidate" && pwd -P)" || return 1
+  java_bin="$home/bin/java"
+  javac_bin="$home/bin/javac"
+  release_file="$home/release"
+  [[ -x "$java_bin" && -x "$javac_bin" && -f "$release_file" ]] || return 1
+
+  java_version="$(jdk_lock_value java_version)" || return 1
+  asset_version="$(jdk_lock_value asset_version)" || return 1
+  [[ "$(jdk_release_value "$release_file" IMPLEMENTOR)" == "Amazon.com Inc." ]] || return 1
+  [[ "$(jdk_release_value "$release_file" IMPLEMENTOR_VERSION)" == "Corretto-$asset_version" ]] || return 1
+  [[ "$(jdk_release_value "$release_file" JAVA_VERSION)" == "$java_version" ]] || return 1
+
+  java_text="$("$java_bin" -version 2>&1)" || return 1
+  javac_text="$("$javac_bin" -version 2>&1)" || return 1
+  actual_java_version="$(jvm_version_number "$java_text")"
+  actual_javac_version="$(jvm_version_number "$javac_text")"
+  [[ "$actual_java_version" == "$java_version" ]] || return 1
+  [[ "$actual_javac_version" == "$java_version" ]] || return 1
+  [[ "$(jdk_major_version "$actual_java_version")" == "21" ]] || return 1
+  [[ "$(jdk_major_version "$actual_javac_version")" == "21" ]] || return 1
+
+  printf '%s\n' "$home"
+}
+
+set_locked_jdk() {
+  local home="$1"
+  LOCKED_JDK_HOME="$home"
+  LOCKED_JDK_JAVA="$home/bin/java"
+  LOCKED_JDK_JAVAC="$home/bin/javac"
+}
+
+cleanup_locked_jdk_install() {
+  local archive="$1"
+  local extract_dir="$2"
+  local final_top_level="$3"
+  local moved_final_top_level="$4"
+
+  rm -f -- "$archive" >/dev/null 2>&1 || true
+  rm -rf -- "$extract_dir" >/dev/null 2>&1 || true
+  if [[ "$moved_final_top_level" -eq 1 ]]; then
+    rm -rf -- "$final_top_level" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+find_local_locked_jdk() {
+  local platform_key="$1"
+  local java_version
+  local candidate
+  local candidate_homes=()
+  local seen_homes=()
+  local home
+  local seen
+  local duplicate
+  local root
+
+  java_version="$(jdk_lock_value java_version)" || return 1
+
+  if [[ "${JAVA_HOME:-}" != "" ]]; then
+    candidate_homes+=("$JAVA_HOME")
+  fi
+
+  if [[ -x /usr/libexec/java_home ]]; then
+    while IFS= read -r candidate; do
+      [[ "$candidate" != "" ]] && candidate_homes+=("$candidate")
+    done < <(/usr/libexec/java_home -v "$java_version" 2>/dev/null || true)
+    while IFS= read -r candidate; do
+      [[ "$candidate" != "" ]] && candidate_homes+=("$candidate")
+    done < <(/usr/libexec/java_home --verbose 2>&1 | sed -n 's/^.* \(\/.*\/Contents\/Home\)$/\1/p')
+  fi
+
+  for root in \
+    /Library/Java/JavaVirtualMachines \
+    "$HOME/Library/Java/JavaVirtualMachines" \
+    "$HOME/.jdks"; do
+    [[ -d "$root" ]] || continue
+    for candidate in "$root"/*/Contents/Home "$root"/*; do
+      [[ -d "$candidate" ]] && candidate_homes+=("$candidate")
+    done
+  done
+
+  for candidate in "${candidate_homes[@]}"; do
+    [[ -d "$candidate" ]] || continue
+    home="$(cd "$candidate" && pwd -P)" || continue
+    duplicate=0
+    for seen in "${seen_homes[@]}"; do
+      if [[ "$seen" == "$home" ]]; then
+        duplicate=1
+        break
+      fi
+    done
+    [[ "$duplicate" -eq 0 ]] || continue
+    seen_homes+=("$home")
+
+    if test_locked_jdk_home "$home" >/dev/null; then
+      printf '%s\n' "$home"
+      return
+    fi
+  done
+
+  return 1
+}
+
+install_locked_jdk() {
+  local platform_key="$1"
+  local archive_type
+  local url
+  local expected_sha
+  local runtime_root
+  local runtime_home
+  local top_level_name
+  local final_top_level
+  local archive
+  local extract_dir
+  local source_top_level
+  local expected_extracted_home
+  local verified_home
+  local actual_sha
+  local moved_final_top_level=0
+
+  archive_type="$(jdk_lock_value "${platform_key}_archive_type")"
+  [[ "$archive_type" == "tar.gz" ]] || die "지원하지 않는 macOS JDK archive type입니다: $archive_type"
+
+  require_command curl
+  require_command shasum
+  require_command tar
+
+  url="$(jdk_lock_value "${platform_key}_url")"
+  expected_sha="$(jdk_lock_value "${platform_key}_sha256")"
+  runtime_root="$(jdk_runtime_root "$platform_key")"
+  runtime_home="$(jdk_runtime_home "$platform_key")"
+  top_level_name="$(jdk_top_level_name "$platform_key")"
+  final_top_level="$runtime_root/$top_level_name"
+  archive="$runtime_root/amazon-corretto-$(jdk_lock_value asset_version)-$platform_key.$archive_type.tmp.$$"
+  extract_dir="$runtime_root/extract-$$"
+  source_top_level="$extract_dir/$top_level_name"
+  expected_extracted_home="$extract_dir/$(jdk_lock_value "${platform_key}_jdk_home")"
+
+  mkdir -p "$runtime_root"
+  if verified_home="$(test_locked_jdk_home "$runtime_home")"; then
+    set_locked_jdk "$verified_home"
+    log "cached locked JDK 확인 완료: $LOCKED_JDK_HOME"
+    return
+  fi
+  [[ ! -e "$runtime_home" ]] || die "JDK final runtime directory가 이미 존재하지만 lock 조건과 일치하지 않습니다: $runtime_home"
+  [[ ! -e "$final_top_level" ]] || die "JDK final runtime top-level directory가 이미 존재하지만 lock 조건과 일치하지 않습니다: $final_top_level"
+  [[ ! -e "$archive" ]] || die "JDK 임시 archive 경로가 이미 존재합니다: $archive"
+  [[ ! -e "$extract_dir" ]] || die "JDK 임시 extraction directory가 이미 존재합니다: $extract_dir"
+
+  log "Amazon Corretto JDK $(jdk_lock_value java_version) 다운로드: $platform_key"
+  if ! curl --fail --location --silent --show-error --output "$archive" "$url"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK archive 다운로드에 실패했습니다."
+  fi
+
+  if ! actual_sha="$(sha256_file "$archive")"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK archive SHA-256 계산에 실패했습니다."
+  fi
+  if [[ "$actual_sha" != "$expected_sha" ]]; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "downloaded JDK checksum이 일치하지 않습니다. expected=$expected_sha actual=$actual_sha"
+  fi
+
+  if ! mkdir -p "$extract_dir"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK archive 압축 해제 임시 directory 생성에 실패했습니다: $extract_dir"
+  fi
+  if ! tar -xzf "$archive" -C "$extract_dir"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK archive 압축 해제에 실패했습니다."
+  fi
+
+  if [[ ! -e "$source_top_level" ]]; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "압축 해제된 JDK top-level directory를 찾을 수 없습니다: $source_top_level"
+  fi
+  if ! verified_home="$(test_locked_jdk_home "$expected_extracted_home")"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "압축 해제된 JDK가 lock 조건과 일치하지 않습니다."
+  fi
+
+  if [[ -e "$runtime_home" ]]; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK final runtime directory가 이미 존재합니다: $runtime_home"
+  fi
+  if [[ -e "$final_top_level" ]]; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK final runtime top-level directory가 이미 존재합니다: $final_top_level"
+  fi
+  if ! mv -- "$source_top_level" "$final_top_level"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "JDK final runtime top-level directory 이동에 실패했습니다: $final_top_level"
+  fi
+  moved_final_top_level=1
+
+  if ! verified_home="$(test_locked_jdk_home "$runtime_home")"; then
+    cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" "$moved_final_top_level"
+    die "이동된 JDK가 lock 조건과 일치하지 않습니다: $runtime_home"
+  fi
+
+  cleanup_locked_jdk_install "$archive" "$extract_dir" "$final_top_level" 0
+  set_locked_jdk "$verified_home"
+  log "locked JDK 준비 완료: $LOCKED_JDK_HOME"
+}
+
+resolve_locked_jdk() {
+  local allow_download=0
+  local platform_key
+  local local_home
+  local runtime_home
+  local verified_home
+
+  if [[ "${1:-}" == "--allow-download" ]]; then
+    allow_download=1
+  fi
+
+  if [[ "$LOCKED_JDK_HOME" != "" ]]; then
+    return
+  fi
+
+  platform_key="$(jdk_platform_key)"
+  require_jdk_lock "$platform_key"
+
+  if local_home="$(find_local_locked_jdk "$platform_key")"; then
+    set_locked_jdk "$local_home"
+    log "local locked JDK 확인 완료: $LOCKED_JDK_HOME"
+    return
+  fi
+
+  runtime_home="$(jdk_runtime_home "$platform_key")"
+  if verified_home="$(test_locked_jdk_home "$runtime_home")"; then
+    set_locked_jdk "$verified_home"
+    log "cached locked JDK 확인 완료: $LOCKED_JDK_HOME"
+    return
+  fi
+
+  if [[ "$allow_download" -eq 1 ]]; then
+    install_locked_jdk "$platform_key"
+    return
+  fi
+
+  die "lock과 일치하는 Amazon Corretto JDK $(jdk_lock_value java_version)를 찾지 못했습니다. 먼저 prepare를 실행하세요."
+}
+
+assert_java21() {
+  resolve_locked_jdk
+}
+
+run_with_locked_jdk() {
+  JAVA_HOME="$LOCKED_JDK_HOME" PATH="$LOCKED_JDK_HOME/bin:$PATH" "$@"
 }
 
 jq_platform_key() {
@@ -357,9 +741,7 @@ psql_exec() {
     || die "container 내부 psql 실행에 실패했습니다. Docker Compose service를 확인하세요: $EXP001_POSTGRES_SERVICE"
 }
 
-require_configured_db_gate() {
-  [[ "$ALLOW_DESTRUCTIVE_RESET" == "true" ]] || die "ALLOW_DESTRUCTIVE_RESET가 true가 아니므로 reset과 run을 중단합니다."
-
+require_configured_db_identity() {
   case "$DB_HOST" in
     localhost|127.0.0.1) ;;
     *) die "DB_HOST가 허용된 local host가 아닙니다: $DB_HOST" ;;
@@ -368,6 +750,10 @@ require_configured_db_gate() {
   [[ "$DB_PORT" == "55432" ]] || die "DB_PORT가 55432가 아닙니다: $DB_PORT"
   [[ "$DB_NAME" == "persistence_lab" ]] || die "DB_NAME이 persistence_lab이 아닙니다: $DB_NAME"
   [[ "$DB_USER" == "lab_user" ]] || die "DB_USER가 lab_user가 아닙니다: $DB_USER"
+}
+
+require_destructive_reset_approved() {
+  [[ "$ALLOW_DESTRUCTIVE_RESET" == "true" ]] || die "ALLOW_DESTRUCTIVE_RESET가 true가 아니므로 reset과 run을 중단합니다."
 }
 
 require_actual_db_gate() {
@@ -384,13 +770,19 @@ require_actual_db_gate() {
   [[ "$actual_isolation" == "read committed" ]] || die "transaction isolation이 read committed가 아닙니다: $actual_isolation"
 }
 
-require_db_safety_gate() {
-  require_configured_db_gate
+require_db_identity_gate() {
+  require_configured_db_identity
+  require_actual_db_gate
+}
+
+require_destructive_reset_gate() {
+  require_destructive_reset_approved
+  require_configured_db_identity
   require_actual_db_gate
 }
 
 reset_benchmark_table() {
-  require_db_safety_gate
+  require_destructive_reset_gate
   psql_exec "TRUNCATE TABLE benchmark_record RESTART IDENTITY;"
 }
 

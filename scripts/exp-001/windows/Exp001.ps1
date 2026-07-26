@@ -15,7 +15,7 @@ function Show-Help {
     Write-Host '사용법: scripts\exp-001\windows\exp001.cmd <action> [run-directory]'
     Write-Host ''
     Write-Host 'Actions:'
-    Write-Host '  prepare    .env, .state, result root와 portable jq를 준비한다.'
+    Write-Host '  prepare    .env, .state, result root, portable jq와 locked JDK를 준비한다.'
     Write-Host '  start      bootJar를 생성하고 exp001 profile application JVM을 시작한다.'
     Write-Host '  check      endpoint, Docker Compose PostgreSQL identity와 Safety Gate를 확인한다.'
     Write-Host '  benchmark  warm-up과 official 6 round를 실행한다.'
@@ -27,9 +27,7 @@ function Show-Help {
 function Invoke-Prepare {
     Assert-ProjectRoot
     Ensure-Directories
-    Require-Command 'java'
     Require-Command 'git'
-    Require-DockerCompose
 
     if (-not (Test-Path -LiteralPath $Script:EnvFile)) {
         Copy-Item -LiteralPath (Join-Path $Script:Exp001Root '.env.example') -Destination $Script:EnvFile
@@ -39,13 +37,15 @@ function Invoke-Prepare {
     }
 
     Install-OrVerify-Jq | Out-Null
+    Resolve-LockedJdk -AllowDownload | Out-Null
+    Require-DockerCompose
     Write-Log '공식 실행 전 .env 값을 확인하세요. destructive reset은 ALLOW_DESTRUCTIVE_RESET=true일 때만 허용됩니다.'
 }
 
 function Invoke-Start {
     Assert-ProjectRoot
     Ensure-Directories
-    Assert-Java21
+    $jdk = Resolve-LockedJdk
     Require-Command 'git'
     Require-DockerCompose
     Require-Jq | Out-Null
@@ -79,7 +79,9 @@ function Invoke-Start {
     }
 
     Write-Log 'bootJar를 생성합니다.'
-    & $gradleWrapper --no-daemon --max-workers=1 bootJar
+    Invoke-WithJdkEnvironment -Jdk $jdk -Command {
+        & $gradleWrapper --no-daemon --max-workers=1 bootJar
+    }
     if ($LASTEXITCODE -ne 0) {
         Stop-Exp001 'bootJar 생성에 실패했습니다.'
     }
@@ -107,7 +109,7 @@ function Invoke-Start {
         ) -join ' '
 
         Write-Log "application을 exp001 profile로 시작합니다. stdout: $Script:ApplicationStdoutLog stderr: $Script:ApplicationStderrLog"
-        $process = Start-Process -FilePath 'java' `
+        $process = Start-Process -FilePath $jdk.JavaPath `
             -ArgumentList $argumentList `
             -WorkingDirectory $Script:ProjectRootAbs `
             -RedirectStandardOutput $Script:ApplicationStdoutLog `
@@ -160,7 +162,7 @@ function Invoke-Start {
 function Invoke-Check {
     Assert-ProjectRoot
     Ensure-Directories
-    Assert-Java21
+    Resolve-LockedJdk | Out-Null
     Require-Command 'git'
     Require-DockerCompose
     Require-Jq | Out-Null
@@ -172,7 +174,7 @@ function Invoke-Check {
     Assert-AppEndpointRegistered
     Write-Log "application reachable: $(Get-ConfigValue 'BASE_URL')"
 
-    Assert-DbSafetyGate
+    Assert-DbIdentityGate
     Write-Log 'PostgreSQL configured identity와 actual identity를 확인했습니다.'
     Write-Log 'official timing 중 debugger, SQL logging, Hibernate statistics, profiler는 OFF 상태로 운영하세요.'
 }
@@ -198,6 +200,7 @@ function Invoke-BenchmarkStep {
 function Invoke-Benchmark {
     Assert-ProjectRoot
     Ensure-Directories
+    Resolve-LockedJdk | Out-Null
     Require-Command 'git'
     Require-DockerCompose
     Require-Jq | Out-Null

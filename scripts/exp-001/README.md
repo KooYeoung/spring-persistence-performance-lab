@@ -36,7 +36,6 @@ macOS에서는 PowerShell을 요구하지 않는다.
 
 공통 필수 도구:
 
-- Java 21
 - Git
 - Docker Desktop
 - Docker Compose
@@ -49,18 +48,28 @@ macOS:
 
 - macOS 기본 Bash
 - `curl`
+- `shasum`
+- `tar`
 
 local `psql`과 system-wide `jq` 설치는 필요하지 않다. PostgreSQL 확인과 reset은 Docker Compose service 내부의 `psql`을 사용한다. JSON 검증과 summary 계산은 `prepare`가 `.tools/` 아래에 준비하는 portable `jq`를 사용한다.
 
+Java runtime은 `tools/jdk.lock`에 고정된 Amazon Corretto JDK만 사용한다. 현재 lock은 Amazon Corretto `21.0.11.10.1`, `JAVA_VERSION=21.0.11`을 대상으로 하며, `release` 파일의 `IMPLEMENTOR`, `IMPLEMENTOR_VERSION`, `JAVA_VERSION`, `java -version`, `javac -version`, major version `21`을 모두 검증한다.
+
 ## 준비
 
-`prepare`는 `.env`가 없으면 `.env.example`을 복사하고, `.state`, result root, portable `jq`를 준비한다. 애플리케이션 실행, DB 연결, DB reset, benchmark 실행은 수행하지 않는다.
+`prepare`는 `.env`가 없으면 `.env.example`을 복사하고, `.state`, result root, portable `jq`, lock된 Amazon Corretto JDK를 준비한다. 애플리케이션 실행, DB 연결, DB reset, benchmark 실행은 수행하지 않는다.
 
 공식 실행 전에는 `.env`를 열어 값을 확인하고, destructive reset을 허용할 때만 `ALLOW_DESTRUCTIVE_RESET=true`로 바꾼다.
 
 Portable `jq`는 `tools/jq.lock`에 고정된 version, official release URL, SHA-256으로만 다운로드한다. `.tools/`의 binary는 Git에 포함하지 않는다.
 
+Portable JDK는 `tools/jdk.lock`에 고정된 official release URL, SHA-256, archive type, archive 내부 JDK home으로만 다운로드한다. `prepare`만 다운로드를 허용한다. `start`, `check`, `benchmark`는 local 또는 `.tools/jdk/<platform>/`에 이미 준비된 lock 일치 JDK만 사용하며, 없으면 `prepare` 실행을 안내하고 중단한다.
+
+Docker는 harness가 설치하거나 시작하지 않는다. `prepare`, `start`, `check`, `benchmark`는 Docker command, Engine 연결, Compose plugin, `persistence-lab-postgres` service 존재, container running 상태, health `healthy`만 확인한다.
+
 ## DB Safety Gate
+
+`check`는 configured DB identity와 actual DB identity만 확인하며 `ALLOW_DESTRUCTIVE_RESET` 값을 읽지 않는다.
 
 DB reset은 다음 조건이 모두 일치할 때만 수행된다.
 
