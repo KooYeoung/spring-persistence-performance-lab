@@ -505,6 +505,21 @@ function Find-ExtractedJdkHome {
     return Test-LockedJdkHome -JdkHome $expectedHome -Lock $Lock
 }
 
+function Remove-LockedJdkInstallScratch {
+    param(
+        [string] $Archive,
+        [string] $ExtractDir,
+        [string] $RuntimeTopLevelDir,
+        [bool] $MovedFinalTopLevel
+    )
+
+    Remove-Item -LiteralPath $Archive -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $ExtractDir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($MovedFinalTopLevel) {
+        Remove-Item -LiteralPath $RuntimeTopLevelDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-LockedJdk {
     param([hashtable] $Lock)
 
@@ -527,8 +542,17 @@ function Install-LockedJdk {
 
     $archive = Join-Path $runtimeRoot "amazon-corretto-$($Lock['asset_version'])-$platformKey.$archiveType.tmp.$PID"
     $extractDir = Join-Path $runtimeRoot "extract-$PID"
-    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    $movedFinalTopLevel = $false
+
+    if (Test-Path -LiteralPath $runtimeTopLevelDir) {
+        Stop-Exp001 "JDK final runtime top-level directory가 이미 존재하지만 lock 조건과 일치하지 않습니다: $runtimeTopLevelDir"
+    }
+    if (Test-Path -LiteralPath $archive) {
+        Stop-Exp001 "JDK 임시 archive 경로가 이미 존재합니다: $archive"
+    }
+    if (Test-Path -LiteralPath $extractDir) {
+        Stop-Exp001 "JDK 임시 extraction directory가 이미 존재합니다: $extractDir"
+    }
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -541,7 +565,6 @@ function Install-LockedJdk {
 
         $actualSha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actualSha -ne $expectedSha) {
-            Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
             Stop-Exp001 "downloaded JDK checksum이 일치하지 않습니다. expected=$expectedSha actual=$actualSha"
         }
 
@@ -560,15 +583,20 @@ function Install-LockedJdk {
 
         $sourceTopLevelDir = Join-Path $extractDir (($Lock["${platformKey}_jdk_home"] -split '[\\/]')[0])
         Move-Item -LiteralPath $sourceTopLevelDir -Destination $runtimeTopLevelDir
-        $verifiedJdk = Assert-LockedJdkHome -JdkHome $runtimeDir -Lock $Lock
+        $movedFinalTopLevel = $true
+        $verifiedJdk = Test-LockedJdkHome -JdkHome $runtimeDir -Lock $Lock
+        if ($null -eq $verifiedJdk) {
+            Stop-Exp001 "이동된 JDK가 lock 조건과 일치하지 않습니다: $runtimeDir"
+        }
+        $movedFinalTopLevel = $false
         Write-Log "locked JDK 준비 완료: $runtimeDir"
         return $verifiedJdk
-    } catch {
-        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-        throw
     } finally {
-        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-LockedJdkInstallScratch `
+            -Archive $archive `
+            -ExtractDir $extractDir `
+            -RuntimeTopLevelDir $runtimeTopLevelDir `
+            -MovedFinalTopLevel $movedFinalTopLevel
     }
 }
 
