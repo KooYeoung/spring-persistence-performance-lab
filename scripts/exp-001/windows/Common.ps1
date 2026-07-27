@@ -1384,6 +1384,114 @@ function Get-Exp001PortQuery {
     }
 }
 
+function New-Exp001CleanupReadinessResult {
+    param(
+        [ValidateSet('READY', 'PROCESS_FOUND', 'PROCESS_UNKNOWN', 'PORT_TARGET_PID', 'PORT_OTHER_PID', 'PORT_UNKNOWN')] [string] $Status,
+        [string] $Message = ''
+    )
+
+    return [pscustomobject] ([ordered] @{
+        status = $Status
+        message = $Message
+    })
+}
+
+function Get-Exp001CleanupReadiness {
+    param([int] $PidValue)
+
+    $processQuery = Get-Exp001ProcessQuery -PidValue $PidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        return New-Exp001CleanupReadinessResult -Status 'PROCESS_UNKNOWN' -Message "process 조회 상태를 확정할 수 없습니다: $($processQuery.error)"
+    }
+    if ($processQuery.status -eq 'FOUND') {
+        return New-Exp001CleanupReadinessResult -Status 'PROCESS_FOUND' -Message "target process가 아직 실행 중입니다: $PidValue"
+    }
+
+    $serverPort = Get-ServerPort
+    $portQuery = Get-Exp001PortQuery -Port $serverPort -TargetPid $PidValue
+    if ($portQuery.status -eq 'UNKNOWN') {
+        return New-Exp001CleanupReadinessResult -Status 'PORT_UNKNOWN' -Message "port $serverPort listener 상태를 확정할 수 없습니다: $($portQuery.error)"
+    }
+    if ($portQuery.status -eq 'FREE') {
+        return New-Exp001CleanupReadinessResult -Status 'READY' -Message "target process가 없고 port $serverPort listener가 없습니다."
+    }
+
+    $ownerText = Format-Exp001PortOwnerPids -OwnerPids $portQuery.ownerPids
+    if ($portQuery.status -eq 'TARGET_PID') {
+        return New-Exp001CleanupReadinessResult -Status 'PORT_TARGET_PID' -Message "target PID가 port $serverPort listener를 유지하고 있습니다: $ownerText"
+    }
+
+    return New-Exp001CleanupReadinessResult -Status 'PORT_OTHER_PID' -Message "다른 PID가 port $serverPort listener를 소유하고 있습니다: $ownerText"
+}
+
+function New-Exp001CleanupResult {
+    param(
+        [bool] $Succeeded,
+        [string] $Message = '',
+        [string] $ErrorMessage = ''
+    )
+
+    return [pscustomobject] ([ordered] @{
+        succeeded = $Succeeded
+        message = $Message
+        error = $ErrorMessage
+    })
+}
+
+function Clear-Exp001StateAfterVerifiedCleanup {
+    Clear-ApplicationState
+    if (Test-Path -LiteralPath $Script:ApplicationStateFile) {
+        return New-Exp001CleanupResult -Succeeded $false -ErrorMessage "application state 삭제를 확인하지 못했습니다: $Script:ApplicationStateFile"
+    }
+
+    return New-Exp001CleanupResult -Succeeded $true
+}
+
+function Complete-StartupFailureCleanupSuccess {
+    param([string] $Message)
+
+    $stateCleanup = Clear-Exp001StateAfterVerifiedCleanup
+    if (-not $stateCleanup.succeeded) {
+        Write-Warn $stateCleanup.error
+        return $stateCleanup
+    }
+
+    Write-Warn $Message
+    return New-Exp001CleanupResult -Succeeded $true -Message $Message
+}
+
+function Complete-StartupFailureCleanupFailure {
+    param([string] $ErrorMessage)
+
+    Write-Warn $ErrorMessage
+    return New-Exp001CleanupResult -Succeeded $false -ErrorMessage $ErrorMessage
+}
+
+function Read-ApplicationStateForStartupCleanup {
+    if (-not (Test-Path -LiteralPath $Script:ApplicationStateFile)) {
+        return [pscustomobject] ([ordered] @{
+            succeeded = $true
+            state = $null
+            error = ''
+        })
+    }
+
+    try {
+        $state = Get-Content -LiteralPath $Script:ApplicationStateFile -Encoding UTF8 -Raw | ConvertFrom-Json
+        return [pscustomobject] ([ordered] @{
+            succeeded = $true
+            state = $state
+            error = ''
+        })
+    } catch {
+        return [pscustomobject] ([ordered] @{
+            succeeded = $false
+            state = $null
+            error = "application state JSON을 읽을 수 없어 cleanup할 process를 확인할 수 없습니다: $Script:ApplicationStateFile ($($_.Exception.Message))"
+        })
+    }
+}
+
 function Invoke-StartupFailureCleanup {
     param(
         [string] $Reason,
@@ -1396,69 +1504,129 @@ function Invoke-StartupFailureCleanup {
     Write-Warn "startup 실패로 시작한 JVM 정리를 시도합니다: $Reason"
     $cleanupState = $State
     if ($null -eq $cleanupState) {
-        $cleanupState = Read-ApplicationState
+        $stateRead = Read-ApplicationStateForStartupCleanup
+        if (-not $stateRead.succeeded) {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage $stateRead.error
+        }
+        $cleanupState = $stateRead.state
     }
     if ($null -eq $cleanupState -and $PidValue -gt 0 -and -not [string]::IsNullOrWhiteSpace($JarPath)) {
         try {
             $cleanupState = New-ApplicationState -PidValue $PidValue -JarPath $JarPath -Profile $Profile
         } catch {
-            Clear-ApplicationState
-            Write-Warn "state 없이 시작한 JVM identity를 확인하지 못해 cleanup signal을 보내지 않습니다: $($_.Exception.Message)"
-            return
+            $identityError = $_.Exception.Message
+            $readiness = Get-Exp001CleanupReadiness -PidValue $PidValue
+            if ($readiness.status -eq 'READY') {
+                return Complete-StartupFailureCleanupSuccess -Message "startup 실패 시점에 PID가 실행 중이 아니고 port가 비어 있어 state를 정리했습니다: $PidValue"
+            }
+
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "state 없이 시작한 JVM identity를 확인하지 못해 cleanup signal을 보내지 않습니다: $identityError; $($readiness.message)"
         }
     }
     if ($null -eq $cleanupState) {
-        Write-Warn 'application state가 없어 cleanup할 process를 확인할 수 없습니다.'
-        return
+        return Complete-StartupFailureCleanupFailure -ErrorMessage 'application state가 없어 cleanup할 process를 확인할 수 없습니다.'
     }
 
     $pidValue = [int] $cleanupState.pid
-    $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-    if ($null -eq $liveProcess) {
-        Clear-ApplicationState
-        Write-Warn "startup 실패 시점에 PID가 이미 종료되어 state를 정리했습니다: $pidValue"
-        return
+    $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 중 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+    }
+    if ($processQuery.status -eq 'ABSENT') {
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            return Complete-StartupFailureCleanupSuccess -Message "startup 실패 시점에 PID가 실행 중이 아니고 port가 비어 있어 state를 정리했습니다: $pidValue"
+        }
+
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup 실패 시점에 PID는 실행 중이 아니지만 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
     }
 
-    if (-not (Test-ExpectedApplicationProcess -State $cleanupState)) {
-        Write-Warn "PID가 기대한 EXP-001 application JVM과 일치하지 않아 signal을 보내지 않습니다: $pidValue"
-        return
+    if (-not (Test-ExpectedApplicationProcessInfo -State $cleanupState -Process $processQuery.process)) {
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "PID가 기대한 EXP-001 application JVM과 일치하지 않아 signal을 보내지 않습니다: $pidValue"
     }
 
     try {
         Stop-Process -Id $pidValue -ErrorAction Stop
     } catch {
-        Write-Warn "startup cleanup 정상 종료 signal 전송에 실패했습니다: $($_.Exception.Message)"
-        return
+        $stopError = $_.Exception.Message
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            return Complete-StartupFailureCleanupSuccess -Message 'startup cleanup signal 전송 race 중 application이 이미 종료되어 state를 정리했습니다.'
+        }
+
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 정상 종료 signal 전송에 실패했고 cleanup 완료도 확인되지 않았습니다: $stopError; $($readiness.message)"
     }
 
     $deadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STOP_TIMEOUT_SECONDS'))
     while ([DateTime]::UtcNow -lt $deadline) {
-        $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$pidValue" -ErrorAction SilentlyContinue
-        if ($null -eq $liveProcess) {
-            Clear-ApplicationState
-            Write-Warn 'startup 실패 후 application JVM을 정상 종료하고 state를 정리했습니다.'
-            return
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            return Complete-StartupFailureCleanupSuccess -Message 'startup 실패 후 application JVM을 정상 종료하고 state를 정리했습니다.'
         }
-        if (-not (Test-ExpectedApplicationProcess -State $cleanupState)) {
-            Write-Warn "startup cleanup 대기 중 PID가 기대한 process와 달라져 강제 종료하지 않습니다: $pidValue"
-            return
+        if ($readiness.status -ne 'PROCESS_FOUND') {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
+        }
+
+        $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+        if ($processQuery.status -eq 'UNKNOWN') {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 대기 중 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+        }
+        if ($processQuery.status -eq 'FOUND' -and -not (Test-ExpectedApplicationProcessInfo -State $cleanupState -Process $processQuery.process)) {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 대기 중 PID가 기대한 process와 달라져 강제 종료하지 않습니다: $pidValue"
         }
         Start-Sleep -Seconds 1
     }
 
-    if (-not (Test-ExpectedApplicationProcess -State $cleanupState)) {
-        Write-Warn "startup cleanup 강제 종료 직전 PID가 기대한 process와 달라져 강제 종료하지 않습니다: $pidValue"
-        return
+    $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 강제 종료 직전 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+    }
+    if ($processQuery.status -eq 'ABSENT') {
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            return Complete-StartupFailureCleanupSuccess -Message 'startup cleanup force fallback 전에 application이 종료되어 state를 정리했습니다.'
+        }
+
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup force fallback 전에 process는 종료되었지만 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
+    }
+    if (-not (Test-ExpectedApplicationProcessInfo -State $cleanupState -Process $processQuery.process)) {
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 강제 종료 직전 PID가 기대한 process와 달라져 강제 종료하지 않습니다: $pidValue"
     }
 
     try {
         Stop-Process -Id $pidValue -Force -ErrorAction Stop
-        Clear-ApplicationState
-        Write-Warn 'startup 실패 후 application JVM을 강제 종료하고 state를 정리했습니다.'
     } catch {
-        Write-Warn "startup cleanup 강제 종료에 실패했습니다: $($_.Exception.Message)"
+        $forceError = $_.Exception.Message
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            return Complete-StartupFailureCleanupSuccess -Message 'startup cleanup force signal race 중 application이 이미 종료되어 state를 정리했습니다.'
+        }
+
+        return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 강제 종료에 실패했고 cleanup 완료도 확인되지 않았습니다: $forceError; $($readiness.message)"
     }
+
+    $forceDeadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STOP_TIMEOUT_SECONDS'))
+    while ([DateTime]::UtcNow -lt $forceDeadline) {
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+        if ($readiness.status -eq 'READY') {
+            return Complete-StartupFailureCleanupSuccess -Message 'startup 실패 후 application JVM을 강제 종료하고 state를 정리했습니다.'
+        }
+        if ($readiness.status -ne 'PROCESS_FOUND') {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 강제 종료 후 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
+        }
+
+        $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+        if ($processQuery.status -eq 'UNKNOWN') {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 강제 종료 후 PID 상태를 확인하지 못해 state를 보존합니다: $pidValue ($($processQuery.error))"
+        }
+        if ($processQuery.status -eq 'FOUND' -and -not (Test-ExpectedApplicationProcessInfo -State $cleanupState -Process $processQuery.process)) {
+            return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 강제 종료 후 PID가 기대한 process와 달라졌습니다. state를 보존합니다: $pidValue"
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+    return Complete-StartupFailureCleanupFailure -ErrorMessage "startup cleanup 종료 timeout 이후에도 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
 }
 
 function Assert-OfficialSettings {

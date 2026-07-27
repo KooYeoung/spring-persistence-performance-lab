@@ -42,6 +42,57 @@ function Invoke-Prepare {
     Write-Log '공식 실행 전 .env 값을 확인하세요. destructive reset은 ALLOW_DESTRUCTIVE_RESET=true일 때만 허용됩니다.'
 }
 
+function Stop-StartupFailure {
+    param(
+        [string] $FailureMessage,
+        [AllowNull()] [object] $CleanupResult = $null
+    )
+
+    if ($null -ne $CleanupResult -and -not $CleanupResult.succeeded) {
+        $cleanupError = [string] $CleanupResult.error
+        if ([string]::IsNullOrWhiteSpace($cleanupError)) {
+            $cleanupError = [string] $CleanupResult.message
+        }
+        if ([string]::IsNullOrWhiteSpace($cleanupError)) {
+            $cleanupError = 'cleanup 실패 원인을 확인하지 못했습니다.'
+        }
+
+        Stop-Exp001 "$FailureMessage; startup cleanup failed: $cleanupError"
+    }
+
+    Stop-Exp001 $FailureMessage
+}
+
+function Clear-StaleApplicationStateForStart {
+    param([object] $State)
+
+    $pidValue = [int] $State.pid
+    $processQuery = Get-Exp001ProcessQuery -PidValue $pidValue -VerifyWithGetProcess
+    if ($processQuery.status -eq 'UNKNOWN') {
+        Stop-Exp001 "PID 상태를 확인하지 못해 state를 보존하고 시작하지 않습니다: $pidValue ($($processQuery.error))"
+    }
+    if ($processQuery.status -eq 'FOUND') {
+        if (Test-ExpectedApplicationProcessInfo -State $State -Process $processQuery.process) {
+            Stop-Exp001 "이미 실행 중인 EXP-001 application PID가 있습니다: $pidValue"
+        }
+
+        Stop-Exp001 "stale 또는 mismatched state입니다. PID 재사용 가능성이 있어 시작하지 않습니다: $Script:ApplicationStateFile"
+    }
+
+    $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
+    if ($readiness.status -eq 'READY') {
+        $stateCleanup = Clear-Exp001StateAfterVerifiedCleanup
+        if (-not $stateCleanup.succeeded) {
+            Stop-Exp001 $stateCleanup.error
+        }
+
+        Write-Log "기존 application state는 stale로 확인되어 정리했습니다: $pidValue"
+        return
+    }
+
+    Stop-Exp001 "기존 application state를 안전하게 stale로 확정하지 못해 시작하지 않습니다: $($readiness.message)"
+}
+
 function Invoke-Start {
     Assert-ProjectRoot
     Ensure-Directories
@@ -56,16 +107,7 @@ function Invoke-Start {
 
     $state = Read-ApplicationState
     if ($null -ne $state) {
-        if (Test-ExpectedApplicationProcess -State $state) {
-            Stop-Exp001 "이미 실행 중인 EXP-001 application PID가 있습니다: $($state.pid)"
-        }
-
-        $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$($state.pid)" -ErrorAction SilentlyContinue
-        if ($null -ne $liveProcess) {
-            Stop-Exp001 "stale 또는 mismatched state입니다. PID 재사용 가능성이 있어 시작하지 않습니다: $Script:ApplicationStateFile"
-        }
-
-        Clear-ApplicationState
+        Clear-StaleApplicationStateForStart -State $state
     }
 
     $currentStatus = Get-HttpStatus -Url "$(Get-ConfigValue 'BASE_URL')/internal/exp-001/jpa"
@@ -131,12 +173,12 @@ function Invoke-Start {
         Write-ApplicationState -State $applicationState
     } catch {
         $failureMessage = "application state 생성에 실패했습니다: $($_.Exception.Message)"
-        Invoke-StartupFailureCleanup -Reason $failureMessage `
+        $cleanupResult = Invoke-StartupFailureCleanup -Reason $failureMessage `
             -State $applicationState `
             -PidValue $process.Id `
             -JarPath $bootJar `
             -Profile (Get-ConfigValue 'SPRING_PROFILE')
-        Stop-Exp001 $failureMessage
+        Stop-StartupFailure -FailureMessage $failureMessage -CleanupResult $cleanupResult
     }
     Write-Log "application PID: $($process.Id)"
 
@@ -148,15 +190,15 @@ function Invoke-Start {
         }
         if (-not (Test-ExpectedApplicationProcess -State (Read-ApplicationState))) {
             $failureMessage = "application process가 시작 중 종료되었거나 identity가 변경되었습니다. log를 확인하세요: $Script:ApplicationStderrLog"
-            Invoke-StartupFailureCleanup -Reason $failureMessage
-            Stop-Exp001 $failureMessage
+            $cleanupResult = Invoke-StartupFailureCleanup -Reason $failureMessage
+            Stop-StartupFailure -FailureMessage $failureMessage -CleanupResult $cleanupResult
         }
         Start-Sleep -Seconds 2
     }
 
     $failureMessage = "startup timeout이 발생했습니다. log를 확인하세요: $Script:ApplicationStderrLog"
-    Invoke-StartupFailureCleanup -Reason $failureMessage
-    Stop-Exp001 $failureMessage
+    $cleanupResult = Invoke-StartupFailureCleanup -Reason $failureMessage
+    Stop-StartupFailure -FailureMessage $failureMessage -CleanupResult $cleanupResult
 }
 
 function Invoke-Check {
@@ -297,52 +339,12 @@ function Invoke-Summary {
     Write-Log "summary 생성 완료: $summaryFile"
 }
 
-function New-StopReadinessResult {
-    param(
-        [ValidateSet('READY', 'PROCESS_FOUND', 'PROCESS_UNKNOWN', 'PORT_TARGET_PID', 'PORT_OTHER_PID', 'PORT_UNKNOWN')] [string] $Status,
-        [string] $Message = ''
-    )
-
-    return [pscustomobject] ([ordered] @{
-        status = $Status
-        message = $Message
-    })
-}
-
-function Get-StopReadiness {
-    param([int] $PidValue)
-
-    $processQuery = Get-Exp001ProcessQuery -PidValue $PidValue -VerifyWithGetProcess
-    if ($processQuery.status -eq 'UNKNOWN') {
-        return New-StopReadinessResult -Status 'PROCESS_UNKNOWN' -Message "process 조회 상태를 확정할 수 없습니다: $($processQuery.error)"
-    }
-    if ($processQuery.status -eq 'FOUND') {
-        return New-StopReadinessResult -Status 'PROCESS_FOUND' -Message "target process가 아직 실행 중입니다: $PidValue"
-    }
-
-    $serverPort = Get-ServerPort
-    $portQuery = Get-Exp001PortQuery -Port $serverPort -TargetPid $PidValue
-    if ($portQuery.status -eq 'UNKNOWN') {
-        return New-StopReadinessResult -Status 'PORT_UNKNOWN' -Message "port $serverPort listener 상태를 확정할 수 없습니다: $($portQuery.error)"
-    }
-    if ($portQuery.status -eq 'FREE') {
-        return New-StopReadinessResult -Status 'READY' -Message "target process가 없고 port $serverPort listener가 없습니다."
-    }
-
-    $ownerText = Format-Exp001PortOwnerPids -OwnerPids $portQuery.ownerPids
-    if ($portQuery.status -eq 'TARGET_PID') {
-        return New-StopReadinessResult -Status 'PORT_TARGET_PID' -Message "target PID가 port $serverPort listener를 유지하고 있습니다: $ownerText"
-    }
-
-    return New-StopReadinessResult -Status 'PORT_OTHER_PID' -Message "다른 PID가 port $serverPort listener를 소유하고 있습니다: $ownerText"
-}
-
 function Complete-StopCleanup {
     param([string] $Message)
 
-    Clear-ApplicationState
-    if (Test-Path -LiteralPath $Script:ApplicationStateFile) {
-        Stop-Exp001 "application state 삭제를 확인하지 못했습니다: $Script:ApplicationStateFile"
+    $stateCleanup = Clear-Exp001StateAfterVerifiedCleanup
+    if (-not $stateCleanup.succeeded) {
+        Stop-Exp001 $stateCleanup.error
     }
 
     Write-Log $Message
@@ -355,7 +357,7 @@ function Complete-StopIfReady {
         [string] $FailurePrefix
     )
 
-    $readiness = Get-StopReadiness -PidValue $PidValue
+    $readiness = Get-Exp001CleanupReadiness -PidValue $PidValue
     if ($readiness.status -eq 'READY') {
         Complete-StopCleanup -Message $SuccessMessage
         return $true
@@ -406,7 +408,7 @@ function Invoke-Stop {
 
     $deadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STOP_TIMEOUT_SECONDS'))
     while ([DateTime]::UtcNow -lt $deadline) {
-        $readiness = Get-StopReadiness -PidValue $pidValue
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
         if ($readiness.status -eq 'READY') {
             Complete-StopCleanup -Message 'application이 정상 종료되었습니다.'
             return
@@ -452,7 +454,7 @@ function Invoke-Stop {
 
     $forceDeadline = [DateTime]::UtcNow.AddSeconds([int] (Get-ConfigValue 'STOP_TIMEOUT_SECONDS'))
     while ([DateTime]::UtcNow -lt $forceDeadline) {
-        $readiness = Get-StopReadiness -PidValue $pidValue
+        $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
         if ($readiness.status -eq 'READY') {
             Complete-StopCleanup -Message 'application을 강제 종료하고 state를 정리했습니다.'
             return
@@ -471,7 +473,7 @@ function Invoke-Stop {
         Start-Sleep -Seconds 1
     }
 
-    $readiness = Get-StopReadiness -PidValue $pidValue
+    $readiness = Get-Exp001CleanupReadiness -PidValue $pidValue
     Stop-Exp001 "application 종료 timeout 이후에도 cleanup 완료 조건이 충족되지 않아 state를 보존합니다: $($readiness.message)"
 }
 
