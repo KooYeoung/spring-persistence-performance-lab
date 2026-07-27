@@ -3,3 +3,5 @@
 gradlew text eol=lf
 *.bat text eol=crlf
 *.jar binary
+
+results/exp-001/** -text whitespace=cr-at-eol
