@@ -1,14 +1,27 @@
 # EXP-001: JPA saveAll vs JDBC Batch
 
-상태: 공개 재현 프로토콜. 아직 실행하지 않음.
+상태: 공개 재현 프로토콜. 공식 결과 1회 생성 완료.
 
 - historical baseline: `private audit`
 - related evidence: `EVD-001`
-- public reproduction: `not executed`
+- public reproduction: `20260727T053643Z-2d76b26`
+- public reproduction result: `results/exp-001/20260727T053643Z-2d76b26`
+- public reproduction source revision: `2d76b26e716a5f1e471f225afe66128ebc948b26`
 
 이 문서는 EXP-001의 단일 Source of Truth이다. 다른 문서는 공통 원칙이나 저장 정책만 설명할 수 있으며, 입력 건수, warm-up, official run 수, 실행 순서, timing boundary, 결과 채택 기준 같은 EXP-001 세부 규칙은 이 문서가 소유한다.
 
 이 프로토콜은 비공개 과거 측정값을 공개하지 않으며, 이 Public 저장소가 기존 성능 결과를 재현했다고 주장하지 않는다.
+
+## 공개 재현 결과
+
+공식 public reproduction 결과는 `results/exp-001/20260727T053643Z-2d76b26`에 보존한다.
+
+- summary: `results/exp-001/20260727T053643Z-2d76b26/summary.md`
+- metadata: `results/exp-001/20260727T053643Z-2d76b26/metadata.md`
+- raw official JSON: `results/exp-001/20260727T053643Z-2d76b26/official/`
+- raw warm-up JSON: `results/exp-001/20260727T053643Z-2d76b26/warmup/`
+
+이 결과는 단일 Windows official execution이며 warm-up은 official statistics에서 제외한다. Profiler와 k6는 사용하지 않았고, 다른 OS, JVM, DB, hardware에서 같은 성능을 보장하지 않는다.
 
 ## 목적
 
