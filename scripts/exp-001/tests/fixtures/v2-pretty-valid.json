@@ -1,0 +1,18 @@
+{
+  "resultFormatVersion": 2,
+  "path": "jdbc",
+  "inputCount": 50000,
+  "savedCount": 50000,
+  "elapsedNanos": 987654321,
+  "elapsedSeconds": 0.987654321,
+  "elapsedMillis": 987.654321,
+  "valid": true,
+  "rowCount": 50000,
+  "distinctBusinessKeyCount": 50000,
+  "missingKeyCount": 0,
+  "unexpectedKeyCount": 0,
+  "duplicateKeyCount": 0,
+  "expectedChecksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "actualChecksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "note": "formatted fixture"
+}

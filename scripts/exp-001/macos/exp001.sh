@@ -169,30 +169,37 @@ run_step() {
   local path="$1"
   local output_file="$2"
   local label="$3"
-  local temp_file="${output_file}.tmp.$$"
+  local raw_temp_file="${output_file}.raw.tmp.$$"
+  local pretty_temp_file="${output_file}.pretty.tmp.$$"
 
   [[ ! -e "$output_file" ]] || die "final output file이 이미 존재합니다: $output_file"
-  rm -f -- "$temp_file"
+  rm -f "$raw_temp_file" "$pretty_temp_file"
 
   reset_benchmark_table
   assert_benchmark_table_empty
   log "$label: $path endpoint 호출"
 
-  if ! call_benchmark_endpoint "$path" "$temp_file" "$EXPECTED_INPUT_COUNT"; then
-    rm -f -- "$temp_file"
+  if ! call_benchmark_endpoint "$path" "$raw_temp_file" "$EXPECTED_INPUT_COUNT"; then
+    rm -f "$raw_temp_file" "$pretty_temp_file"
     die "HTTP 호출 실패로 결과를 final path에 반영하지 않았습니다: $output_file"
   fi
 
-  if ! verify_response "$path" "$temp_file" "$EXPECTED_INPUT_COUNT"; then
-    rm -f -- "$temp_file"
+  if ! verify_response "$path" "$raw_temp_file" "$EXPECTED_INPUT_COUNT" "raw"; then
+    rm -f "$raw_temp_file" "$pretty_temp_file"
     die "response 검증 실패로 결과를 final path에 반영하지 않았습니다: $output_file"
   fi
 
+  if ! format_response "$path" "$raw_temp_file" "$pretty_temp_file" "$EXPECTED_INPUT_COUNT"; then
+    rm -f "$raw_temp_file" "$pretty_temp_file"
+    die "response format 변환 실패로 결과를 final path에 반영하지 않습니다: $output_file"
+  fi
+
   [[ ! -e "$output_file" ]] || die "검증 후 final output file이 이미 존재합니다: $output_file"
-  if ! mv -- "$temp_file" "$output_file"; then
-    rm -f -- "$temp_file"
+  if ! promote_file_no_clobber "$pretty_temp_file" "$output_file"; then
+    rm -f "$raw_temp_file" "$pretty_temp_file"
     die "검증된 temporary JSON을 final path로 이동하지 못했습니다: $output_file"
   fi
+  rm -f "$raw_temp_file"
 
   cooldown "$COOLDOWN_SECONDS"
 }
@@ -305,20 +312,42 @@ summary() {
     shopt -u nullglob
   fi
 
+  local sorted_official_files=()
+  while IFS= read -r file; do
+    [[ "$file" != "" ]] && sorted_official_files+=("$file")
+  done < <(printf '%s\n' "${official_files[@]}" | LC_ALL=C sort)
+  official_files=("${sorted_official_files[@]}")
+
   [[ "${#official_files[@]}" -eq 12 ]] || die "official JSON 파일 수가 정확히 12개가 아닙니다: ${#official_files[@]}"
+  local official_file_names_json
+  local jq_bin
+  jq_bin="$(require_jq)"
+  official_file_names_json="$(
+    for file in "${official_files[@]}"; do
+      basename "$file"
+    done | "$jq_bin" -R -s -c 'split("\n") | map(select(length > 0))'
+  )" || die "official filename JSON array 생성에 실패했습니다."
 
   local summary_file="$run_dir/summary.md"
   local temp_summary="${summary_file}.tmp.$$"
-  local jq_bin
-  jq_bin="$(require_jq)"
-  rm -f -- "$temp_summary"
+  rm -f "$temp_summary"
 
-  if ! "$jq_bin" -r --argjson expectedCount "$EXPECTED_INPUT_COUNT" -s -f "$EXP001_SUMMARY_FILTER" "${official_files[@]}" >"$temp_summary"; then
-    rm -f -- "$temp_summary"
+  [[ ! -e "$summary_file" ]] || die "summary final path가 이미 존재합니다: $summary_file"
+
+  if ! jq_to_file "$temp_summary" -r --argjson expectedCount "$EXPECTED_INPUT_COUNT" --argjson officialFileNames "$official_file_names_json" -s -f "$EXP001_SUMMARY_FILTER" "${official_files[@]}"; then
+    rm -f "$temp_summary"
     die "official JSON gate 또는 summary 계산에 실패했습니다."
   fi
 
-  mv -- "$temp_summary" "$summary_file"
+  if ! assert_text_file_lf_utf8_no_bom_final_newline "$temp_summary"; then
+    rm -f "$temp_summary"
+    die "summary byte policy 검증에 실패했습니다: $summary_file"
+  fi
+
+  if ! promote_file_no_clobber "$temp_summary" "$summary_file"; then
+    rm -f "$temp_summary"
+    die "summary final path 승격에 실패했습니다: $summary_file"
+  fi
   log "summary 생성 완료: $summary_file"
 }
 

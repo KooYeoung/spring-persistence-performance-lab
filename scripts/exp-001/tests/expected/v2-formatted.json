@@ -1,0 +1,18 @@
+{
+  "resultFormatVersion": 2,
+  "path": "jpa",
+  "inputCount": 50000,
+  "savedCount": 50000,
+  "elapsedNanos": 1234567890,
+  "elapsedSeconds": 1.23456789,
+  "elapsedMillis": 1234.56789,
+  "valid": true,
+  "rowCount": 50000,
+  "distinctBusinessKeyCount": 50000,
+  "missingKeyCount": 0,
+  "unexpectedKeyCount": 0,
+  "duplicateKeyCount": 0,
+  "expectedChecksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "actualChecksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "note": "fixture"
+}

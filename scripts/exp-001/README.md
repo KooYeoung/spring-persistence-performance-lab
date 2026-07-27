@@ -105,8 +105,26 @@ results/exp-001/<run-id>/
 
 Run ID는 UTC timestamp와 short public Git SHA만 사용하며 사용자명, host-local absolute path, secret을 포함하지 않는다.
 
-HTTP response는 final JSON에 직접 쓰지 않는다. HTTP 성공 body만 같은 디렉터리의 temporary file에 기록하고, JSON parse와 공통 `jq` response validation을 모두 통과한 뒤에만 final path로 이동한다. 실패 시 temporary file을 삭제하고 다음 reset/run을 수행하지 않는다.
+HTTP response는 final JSON에 직접 쓰지 않는다. HTTP 성공 body는 `<final>.raw.tmp.<pid>`에 기록하고 raw schema validation을 통과한 뒤, timer 밖 `format-response.jq` 단계에서 `<final>.pretty.tmp.<pid>`로 v2 pretty JSON을 생성한다. v2 validation, UTF-8 no BOM/LF/final newline/NUL byte 검사, raw와 formatted JSON의 semantic equality 검증을 모두 통과한 pretty temp만 final path로 이동한다. 실패 시 temporary file을 삭제하고 다음 reset/run을 수행하지 않는다.
 
-`summary.md`는 official JSON이 정확히 12개이고, JPA 6개와 JDBC 6개가 모두 `valid=true`이며 checksum 형식과 equality를 통과할 때만 생성한다. Warm-up JSON은 보존하지만 공식 통계에는 포함하지 않는다.
+Raw HTTP response에는 `resultFormatVersion`과 `elapsedSeconds`가 없어야 한다. Future final JSON은 `resultFormatVersion: 2`와 `elapsedSeconds`를 포함한다. Existing legacy result처럼 두 field가 모두 없는 JSON은 summary 입력으로 계속 허용하지만, `resultFormatVersion` 없이 `elapsedSeconds`만 있는 파일은 ambiguous artifact로 거부한다.
+
+`summary.md`는 official JSON이 정확히 12개이고, basename이 `round-01-01-jpa.json`부터 `round-06-02-jpa.json`까지 기대 순서와 정확히 일치하며, filename strategy와 JSON `path`가 일치할 때만 생성한다. JPA 6개와 JDBC 6개가 모두 `valid=true`이고 checksum 형식과 equality를 통과해야 한다. Legacy와 v2가 섞인 official set도 파일별 schema validation을 통과하면 허용한다. Warm-up JSON은 보존하지만 공식 통계에는 포함하지 않는다. Summary 통계는 `elapsedNanos`를 Source of Truth로 사용하고 seconds-first table, median unit overview, throughput summary를 분리해서 출력한다. Derived Comparison은 median speedup, JDBC median elapsed reduction, mean speedup만 출력한다. p95는 계산하지 않는다.
+
+Windows harness는 jq stdout을 PowerShell string으로 받지 않고 `ProcessStartInfo` stdout stream을 file stream으로 복사한다. jq output은 Windows에서도 `-b` binary mode로 받아 LF byte policy를 유지한다.
+
+Fixture 검증은 다음 명령으로 실행한다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/exp-001/tests/run-fixtures.ps1
+```
+
+```bash
+bash scripts/exp-001/tests/run-fixtures.sh
+```
+
+Windows Git Bash에서 Bash fixture runner를 실행할 때는 repository의 locked Windows `jq` 1.7.1 binary를 명시 override로 사용한다. 이는 shared jq semantics와 Bash runner 검증용이며, actual macOS 기본 Bash 3.2 runtime 검증을 대체하지 않는다.
+
+Fixture와 golden file은 `scripts/exp-001/tests/fixtures/*.json`, `scripts/exp-001/tests/expected/*.json`, `scripts/exp-001/tests/expected/*.md`에 있으며 Git attribute로 `text eol=lf`를 고정한다.
 
 Timeout 후에는 애플리케이션 내부 작업이 계속될 수 있다. 이 경우 자동 reset이나 부족한 step 보충을 하지 말고, 애플리케이션과 DB 상태를 확인한 뒤 새 run ID로 전체 official set을 다시 시작한다.
