@@ -312,25 +312,31 @@ function Invoke-Summary {
     if ($jsonFiles.Count -ne 12) {
         Stop-Exp001 "official JSON 파일 수가 정확히 12개가 아닙니다: $($jsonFiles.Count)"
     }
+    $officialFileNamesJson = @($jsonFiles | ForEach-Object { $_.Name }) | ConvertTo-Json -Compress
 
     $summaryFile = Join-Path $runDir 'summary.md'
     $tempSummary = "$summaryFile.tmp.$PID"
     Remove-Item -LiteralPath $tempSummary -Force -ErrorAction SilentlyContinue
 
     try {
-        $jq = Require-Jq
-        $summaryLines = @(& $jq -r --argjson expectedCount ([int] (Get-ConfigValue 'EXPECTED_INPUT_COUNT')) -s -f $Script:SummaryFilter @($jsonFiles.FullName))
-        $jqExitCode = $LASTEXITCODE
-        if ($jqExitCode -ne 0) {
-            Stop-Exp001 'official JSON gate 또는 summary 계산에 실패했습니다.'
+        if (Test-Path -LiteralPath $summaryFile) {
+            throw "summary final path가 이미 존재합니다: $summaryFile"
         }
-        $newline = [Environment]::NewLine
-        $summaryText = [string]::Join($newline, [string[]] $summaryLines)
-        if ($summaryLines.Count -gt 0) {
-            $summaryText += $newline
-        }
-        [System.IO.File]::WriteAllText($tempSummary, $summaryText, $Script:Utf8NoBom)
-        Move-Item -LiteralPath $tempSummary -Destination $summaryFile -Force
+        $summaryArguments = @(
+            '-r',
+            '--argjson',
+            'expectedCount',
+            ([string] [int] (Get-ConfigValue 'EXPECTED_INPUT_COUNT')),
+            '--argjson',
+            'officialFileNames',
+            $officialFileNamesJson,
+            '-s',
+            '-f',
+            $Script:SummaryFilter
+        ) + @($jsonFiles.FullName)
+        Invoke-JqToFile -Arguments $summaryArguments -DestinationPath $tempSummary
+        Assert-TextFileLfUtf8NoBomFinalNewline -Path $tempSummary
+        [System.IO.File]::Move($tempSummary, $summaryFile)
     } catch {
         Remove-Item -LiteralPath $tempSummary -Force -ErrorAction SilentlyContinue
         throw

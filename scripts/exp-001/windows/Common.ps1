@@ -15,6 +15,7 @@ $Script:ApplicationStderrLog = Join-Path $Script:StateDir 'application.err.log'
 $Script:JqLockFile = Join-Path $Script:Exp001Root 'tools\jq.lock'
 $Script:JdkLockFile = Join-Path $Script:Exp001Root 'tools\jdk.lock'
 $Script:ValidateResponseFilter = Join-Path $Script:Exp001Root 'shared\validate-response.jq'
+$Script:FormatResponseFilter = Join-Path $Script:Exp001Root 'shared\format-response.jq'
 $Script:SummaryFilter = Join-Path $Script:Exp001Root 'shared\summary.jq'
 $Script:PostgresService = 'persistence-lab-postgres'
 $Script:PlatformName = 'windows'
@@ -811,6 +812,155 @@ function Require-Jq {
     return $target
 }
 
+function Join-ProcessArguments {
+    param([string[]] $Arguments)
+
+    if ($null -eq $Arguments -or $Arguments.Count -eq 0) {
+        return ''
+    }
+
+    return (($Arguments | ForEach-Object { Quote-ProcessArgument -Value $_ }) -join ' ')
+}
+
+function Invoke-NativeProcessToFile {
+    param(
+        [string] $FilePath,
+        [string[]] $Arguments,
+        [string] $DestinationPath
+    )
+
+    $parent = Split-Path -Parent $DestinationPath
+    if ([string]::IsNullOrWhiteSpace($parent) -or -not (Test-Path -LiteralPath $parent)) {
+        throw "destination parent directory가 없습니다: $DestinationPath"
+    }
+    if (Test-Path -LiteralPath $DestinationPath) {
+        throw "destination file이 이미 존재합니다: $DestinationPath"
+    }
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = Join-ProcessArguments -Arguments $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $destination = $null
+    $createdDestination = $false
+
+    try {
+        $destination = New-Object System.IO.FileStream(
+            $DestinationPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::None
+        )
+        $createdDestination = $true
+
+        [void] $process.Start()
+        $stdoutCopy = $process.StandardOutput.BaseStream.CopyToAsync($destination)
+        $stderrRead = $process.StandardError.ReadToEndAsync()
+
+        $process.WaitForExit()
+        [void] $stdoutCopy.GetAwaiter().GetResult()
+        $stderrText = $stderrRead.GetAwaiter().GetResult()
+        $destination.Flush()
+
+        if ($process.ExitCode -ne 0) {
+            $stderrText = ([string] $stderrText).Trim()
+            if ([string]::IsNullOrWhiteSpace($stderrText)) {
+                throw "native process failed: $FilePath exit=$($process.ExitCode)"
+            }
+            throw "native process failed: $FilePath exit=$($process.ExitCode) stderr=$stderrText"
+        }
+    } catch {
+        if ($null -ne $destination) {
+            $destination.Dispose()
+            $destination = $null
+        }
+        if ($createdDestination) {
+            Remove-Item -LiteralPath $DestinationPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    } finally {
+        if ($null -ne $destination) {
+            $destination.Dispose()
+        }
+        $process.Dispose()
+    }
+}
+
+function Invoke-JqToFile {
+    param(
+        [string[]] $Arguments,
+        [string] $DestinationPath
+    )
+
+    $jq = Require-Jq
+    Invoke-NativeProcessToFile -FilePath $jq -Arguments (@('-b') + $Arguments) -DestinationPath $DestinationPath
+}
+
+function Assert-TextFileLfUtf8NoBomFinalNewline {
+    param([string] $Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "검증할 파일이 없습니다: $Path"
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) {
+        throw "파일이 비어 있습니다: $Path"
+    }
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        throw "UTF-8 BOM이 포함되어 있습니다: $Path"
+    }
+    if ([Array]::IndexOf($bytes, [byte] 0) -ge 0) {
+        throw "NUL byte가 포함되어 있습니다: $Path"
+    }
+    if ([Array]::IndexOf($bytes, [byte] 13) -ge 0) {
+        throw "CR byte가 포함되어 있습니다. LF만 허용합니다: $Path"
+    }
+    if ($bytes[$bytes.Length - 1] -ne 10) {
+        throw "파일 마지막 byte가 LF가 아닙니다: $Path"
+    }
+    if ($bytes.Length -ge 2 -and $bytes[$bytes.Length - 2] -eq 10) {
+        throw "파일 끝에 final newline이 두 번 이상 있습니다: $Path"
+    }
+
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try {
+        [void] $strictUtf8.GetString($bytes)
+    } catch {
+        throw "UTF-8로 decode할 수 없는 byte가 있습니다: $Path"
+    }
+}
+
+function Assert-FormattedResponseSemanticEquality {
+    param(
+        [string] $RawPath,
+        [string] $FormattedPath
+    )
+
+    $tempPath = "$FormattedPath.semantic.tmp.$PID"
+    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+
+    try {
+        Invoke-JqToFile -Arguments @(
+            '-e',
+            '-s',
+            '.[0] == (.[1] | del(.resultFormatVersion, .elapsedSeconds))',
+            $RawPath,
+            $FormattedPath
+        ) -DestinationPath $tempPath
+    } catch {
+        throw "formatted response가 raw response와 의미적으로 일치하지 않습니다: $FormattedPath ($($_.Exception.Message))"
+    } finally {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-HttpStatus {
     param([string] $Url)
 
@@ -937,13 +1087,14 @@ function Invoke-ResponseValidation {
     param(
         [string] $ExpectedPath,
         [string] $FilePath,
-        [int] $ExpectedCount
+        [int] $ExpectedCount,
+        [ValidateSet('raw', 'v2', 'artifact')] [string] $Mode = 'artifact'
     )
 
     $jq = Require-Jq
-    & $jq -e --arg expectedPath $ExpectedPath --argjson expectedCount $ExpectedCount -f $Script:ValidateResponseFilter $FilePath *> $null
+    & $jq -e --arg mode $Mode --arg expectedPath $ExpectedPath --argjson expectedCount $ExpectedCount -f $Script:ValidateResponseFilter $FilePath *> $null
     if ($LASTEXITCODE -ne 0) {
-        Stop-Exp001 "response JSON gate를 통과하지 못했습니다: $FilePath"
+        throw "response JSON gate를 통과하지 못했습니다: $FilePath"
     }
 }
 
@@ -958,8 +1109,10 @@ function Invoke-BenchmarkEndpoint {
         Stop-Exp001 "final output file이 이미 존재합니다: $OutputPath"
     }
 
-    $tempPath = "$OutputPath.tmp.$PID"
-    Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    $rawTempPath = "$OutputPath.raw.tmp.$PID"
+    $prettyTempPath = "$OutputPath.pretty.tmp.$PID"
+    Remove-Item -LiteralPath $rawTempPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $prettyTempPath -Force -ErrorAction SilentlyContinue
 
     try {
         $url = "$(Get-ConfigValue 'BASE_URL')/internal/exp-001/$PathName"
@@ -977,16 +1130,33 @@ function Invoke-BenchmarkEndpoint {
         }
 
         $null = $response.Content | ConvertFrom-Json
-        [System.IO.File]::WriteAllText($tempPath, [string] $response.Content, $Script:Utf8NoBom)
-        Invoke-ResponseValidation -ExpectedPath $PathName -FilePath $tempPath -ExpectedCount $Count
+        [System.IO.File]::WriteAllText($rawTempPath, [string] $response.Content, $Script:Utf8NoBom)
+        Invoke-ResponseValidation -ExpectedPath $PathName -FilePath $rawTempPath -ExpectedCount $Count -Mode 'raw'
+
+        Invoke-JqToFile -Arguments @(
+            '--arg',
+            'expectedPath',
+            $PathName,
+            '--argjson',
+            'expectedCount',
+            ([string] $Count),
+            '-f',
+            $Script:FormatResponseFilter,
+            $rawTempPath
+        ) -DestinationPath $prettyTempPath
+        Invoke-ResponseValidation -ExpectedPath $PathName -FilePath $prettyTempPath -ExpectedCount $Count -Mode 'v2'
+        Assert-TextFileLfUtf8NoBomFinalNewline -Path $prettyTempPath
+        Assert-FormattedResponseSemanticEquality -RawPath $rawTempPath -FormattedPath $prettyTempPath
 
         if (Test-Path -LiteralPath $OutputPath) {
-            Stop-Exp001 "검증 후 final output file이 이미 존재합니다: $OutputPath"
+            throw "검증 후 final output file이 이미 존재합니다: $OutputPath"
         }
 
-        [System.IO.File]::Move($tempPath, $OutputPath)
+        [System.IO.File]::Move($prettyTempPath, $OutputPath)
+        Remove-Item -LiteralPath $rawTempPath -Force -ErrorAction SilentlyContinue
     } catch {
-        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $rawTempPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $prettyTempPath -Force -ErrorAction SilentlyContinue
         throw
     }
 }
@@ -1014,10 +1184,48 @@ function New-RunId {
 
 function Quote-ProcessArgument {
     param([string] $Value)
-    if ($Value -match '[\s"]') {
-        return '"' + ($Value -replace '"', '\"') + '"'
+
+    if ($null -eq $Value) {
+        $Value = ''
     }
-    return $Value
+    if ($Value.Length -eq 0) {
+        return '""'
+    }
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    [void] $builder.Append('"')
+    $backslashCount = 0
+
+    foreach ($char in $Value.ToCharArray()) {
+        if ($char -eq [char] 92) {
+            $backslashCount++
+            continue
+        }
+
+        if ($char -eq [char] 34) {
+            if ($backslashCount -gt 0) {
+                [void] $builder.Append('\' * ($backslashCount * 2))
+                $backslashCount = 0
+            }
+            [void] $builder.Append('\"')
+            continue
+        }
+
+        if ($backslashCount -gt 0) {
+            [void] $builder.Append('\' * $backslashCount)
+            $backslashCount = 0
+        }
+        [void] $builder.Append($char)
+    }
+
+    if ($backslashCount -gt 0) {
+        [void] $builder.Append('\' * ($backslashCount * 2))
+    }
+    [void] $builder.Append('"')
+    return $builder.ToString()
 }
 
 function Convert-ProcessCreationDateToUtcTicks {

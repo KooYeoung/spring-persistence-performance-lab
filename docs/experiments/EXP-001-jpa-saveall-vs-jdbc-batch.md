@@ -364,7 +364,18 @@ Endpoint response field:
 - `expectedChecksum`
 - `actualChecksum`
 
-Script는 검증을 통과한 warm-up과 official response JSON을 파일로 보존한다. Official round와 order position은 파일명으로 식별한다.
+Endpoint가 반환하는 raw HTTP response에는 `resultFormatVersion`과 `elapsedSeconds`를 포함하지 않는다. 이 두 field는 script harness가 timer 밖 post-processing 단계에서만 추가한다.
+
+Future result JSON은 다음 v2 field를 추가한다.
+
+- `resultFormatVersion`: JSON integer `2`
+- `elapsedSeconds`: `elapsedNanos / 1_000_000_000`에서 파생한 finite positive JSON number
+
+Legacy result는 `resultFormatVersion`과 `elapsedSeconds`가 모두 없는 파일이다. `resultFormatVersion` 없이 `elapsedSeconds`만 있는 파일은 ambiguous artifact로 거부한다. `resultFormatVersion`이 `2`가 아니거나 v2에서 `elapsedSeconds`가 없거나 numeric relation을 만족하지 않으면 거부한다. Summary는 legacy와 v2가 섞인 official set을 허용하되 각 파일을 자기 schema로 검증한다.
+
+`elapsedNanos`가 elapsed time의 Source of Truth이다. `elapsedMillis`와 `elapsedSeconds`는 `elapsedNanos`에서 파생된 값으로만 취급하며 직접 equality 비교 대신 tolerance 기반 numeric relation으로 검증한다.
+
+Script는 검증을 통과한 warm-up과 official response JSON을 파일로 보존한다. Official round와 order position은 파일명으로 식별한다. Summary는 official basename 목록이 `round-01-01-jpa.json`, `round-01-02-jdbc.json`, `round-02-01-jdbc.json`, `round-02-02-jpa.json`, `round-03-01-jpa.json`, `round-03-02-jdbc.json`, `round-04-01-jdbc.json`, `round-04-02-jpa.json`, `round-05-01-jpa.json`, `round-05-02-jdbc.json`, `round-06-01-jdbc.json`, `round-06-02-jpa.json` 순서와 정확히 일치하고 filename strategy와 JSON `path`가 일치할 때만 생성한다. Future JSON은 portable `jq` serializer의 2-space pretty output을 사용하며 UTF-8 no BOM, LF, final newline exactly once, NUL 없음 정책을 따른다.
 
 대표 통계:
 
@@ -384,8 +395,13 @@ Script는 검증을 통과한 warm-up과 official response JSON을 파일로 보
 계산 정책:
 
 - `rowsPerSecond = inputCount * 1_000_000_000 / elapsedNanos`
-- time reduction과 speedup은 반올림 전 median value로 계산
+- median speedup은 `JPA median elapsedNanos / JDBC median elapsedNanos`로 계산
+- JDBC median elapsed reduction은 `(1 - JDBC median elapsedNanos / JPA median elapsedNanos) * 100`으로 계산
+- mean speedup은 raw `elapsedNanos` mean으로 계산
 - 반올림은 표시 단계에서만 수행
+- JSON number token은 exponent notation을 허용하지만 Markdown에는 fixed decimal display만 사용
+- human duration은 `elapsedNanos`에서 직접 계산하고 `647.975ms`, `8.783s`, `1m 16.685s` 형태로 표시
+- elapsed seconds는 소수 9자리로 표시
 - elapsed milliseconds는 소수 3자리로 표시
 - rows per second는 소수 2자리로 표시
 - percentage는 소수 2자리로 표시
@@ -412,6 +428,28 @@ Script harness output은 다음 구조를 사용한다.
 - `summary.md`
 
 Run ID에는 user name, host-specific absolute path, secret을 포함하지 않는다.
+
+기존 official public reproduction `results/exp-001/20260727T053643Z-2d76b26`은 immutable legacy artifact로 보존한다. 새 formatter와 summary 정책을 검증하더라도 이 directory의 14개 JSON, `summary.md`, `metadata.md`는 rewrite하지 않는다.
+
+Future summary는 portable `jq` filter가 official JSON 12개와 exact basename/order를 모두 검증한 뒤 생성한다. Summary section은 Run Metadata, Official Run Table, Statistical Summary, Median Unit Overview, Throughput Summary, Derived Comparison, Interpretation Boundary 순서를 사용한다. Warm-up은 제외하고 p95는 계산하지 않는다. Derived Comparison은 median speedup, JDBC median elapsed reduction, mean speedup만 포함한다.
+
+## Fixture 검증
+
+Harness fixture는 official benchmark나 application lifecycle을 실행하지 않고 OS temporary directory에서만 generated artifact를 만든다.
+
+Windows PowerShell runner:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/exp-001/tests/run-fixtures.ps1
+```
+
+Bash runner:
+
+```bash
+bash scripts/exp-001/tests/run-fixtures.sh
+```
+
+Windows Git Bash에서 Bash runner를 실행할 때는 repository에 준비된 locked Windows `jq` 1.7.1 binary를 `EXP001_JQ_BIN_OVERRIDE`로 사용한다. 이 검증은 shared jq semantics, byte policy, summary gate, no-clobber promotion test를 확인하지만 actual macOS 기본 Bash 3.2 runtime 검증을 대체하지 않는다.
 
 ## 재현 명령(Reproduction Commands)
 

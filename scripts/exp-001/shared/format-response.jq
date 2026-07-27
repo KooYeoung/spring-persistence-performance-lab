@@ -19,12 +19,11 @@ def close_to($expected; $tolerance):
 def elapsed_millis_valid($record):
   ($record.elapsedMillis | close_to(($record.elapsedNanos / 1000000); 0.0000005));
 
-def elapsed_seconds_valid($record):
-  ($record.elapsedSeconds | close_to(($record.elapsedNanos / 1000000000); 0.0000000005));
-
-def base_record_valid($expectedPath; $expectedCount):
+def legacy_record_valid($expectedPath; $expectedCount):
   . as $record
   | type == "object"
+  and (has("resultFormatVersion") | not)
+  and (has("elapsedSeconds") | not)
   and ($record.path == $expectedPath)
   and ($record.inputCount | positive_integer)
   and ($record.inputCount == $expectedCount)
@@ -44,33 +43,49 @@ def base_record_valid($expectedPath; $expectedCount):
   and ($record.actualChecksum | sha256_checksum)
   and ($record.expectedChecksum == $record.actualChecksum);
 
-def legacy_record_valid($expectedPath; $expectedCount):
-  base_record_valid($expectedPath; $expectedCount)
-  and (has("resultFormatVersion") | not)
-  and (has("elapsedSeconds") | not);
+def known_response_keys:
+  [
+    "path",
+    "inputCount",
+    "savedCount",
+    "elapsedNanos",
+    "elapsedMillis",
+    "valid",
+    "rowCount",
+    "distinctBusinessKeyCount",
+    "missingKeyCount",
+    "unexpectedKeyCount",
+    "duplicateKeyCount",
+    "expectedChecksum",
+    "actualChecksum",
+    "resultFormatVersion",
+    "elapsedSeconds"
+  ];
 
-def v2_record_valid($expectedPath; $expectedCount):
-  . as $record
-  | base_record_valid($expectedPath; $expectedCount)
-  and ($record.resultFormatVersion | type == "number" and . == 2 and floor == .)
-  and (has("elapsedSeconds"))
-  and elapsed_seconds_valid($record);
+def unknown_fields:
+  known_response_keys as $known
+  | with_entries(select(.key as $key | ($known | index($key) | not)));
 
-def artifact_record_valid($expectedPath; $expectedCount):
-  if has("resultFormatVersion") then
-    v2_record_valid($expectedPath; $expectedCount)
-  elif has("elapsedSeconds") then
-    false
+. as $raw
+| if ($raw | legacy_record_valid($expectedPath; $expectedCount) | not) then
+    error("raw response schema validation failed")
   else
-    legacy_record_valid($expectedPath; $expectedCount)
-  end;
-
-if $mode == "raw" then
-  legacy_record_valid($expectedPath; $expectedCount)
-elif $mode == "v2" then
-  v2_record_valid($expectedPath; $expectedCount)
-elif $mode == "artifact" then
-  artifact_record_valid($expectedPath; $expectedCount)
-else
-  error("unsupported validation mode: \($mode)")
-end
+    {
+      resultFormatVersion: 2,
+      path: $raw.path,
+      inputCount: $raw.inputCount,
+      savedCount: $raw.savedCount,
+      elapsedNanos: $raw.elapsedNanos,
+      elapsedSeconds: ($raw.elapsedNanos / 1000000000),
+      elapsedMillis: $raw.elapsedMillis,
+      valid: $raw.valid,
+      rowCount: $raw.rowCount,
+      distinctBusinessKeyCount: $raw.distinctBusinessKeyCount,
+      missingKeyCount: $raw.missingKeyCount,
+      unexpectedKeyCount: $raw.unexpectedKeyCount,
+      duplicateKeyCount: $raw.duplicateKeyCount,
+      expectedChecksum: $raw.expectedChecksum,
+      actualChecksum: $raw.actualChecksum
+    }
+    + ($raw | unknown_fields)
+  end

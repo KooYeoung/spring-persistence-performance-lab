@@ -11,6 +11,7 @@ EXP001_APPLICATION_LOG="$EXP001_STATE_DIR/application.log"
 EXP001_JQ_LOCK_FILE="$EXP001_ROOT/tools/jq.lock"
 EXP001_JDK_LOCK_FILE="$EXP001_ROOT/tools/jdk.lock"
 EXP001_VALIDATE_RESPONSE_FILTER="$EXP001_ROOT/shared/validate-response.jq"
+EXP001_FORMAT_RESPONSE_FILTER="$EXP001_ROOT/shared/format-response.jq"
 EXP001_SUMMARY_FILTER="$EXP001_ROOT/shared/summary.jq"
 EXP001_POSTGRES_SERVICE="persistence-lab-postgres"
 EXP001_PLATFORM_NAME="macos"
@@ -632,7 +633,13 @@ sha256_file() {
   local file="$1"
   local checksum
   local ignored
-  IFS=' ' read -r checksum ignored < <(shasum -a 256 "$file")
+  if command -v shasum >/dev/null 2>&1; then
+    IFS=' ' read -r checksum ignored < <(shasum -a 256 "$file")
+  elif command -v sha256sum >/dev/null 2>&1; then
+    IFS=' ' read -r checksum ignored < <(sha256sum "$file")
+  else
+    die "SHA-256 command를 찾지 못했습니다: shasum 또는 sha256sum"
+  fi
   printf '%s\n' "$checksum"
 }
 
@@ -693,11 +700,177 @@ require_jq() {
   local platform_key
   local expected_sha
   local target
+
+  if [[ "${EXP001_JQ_BIN_CACHE:-}" != "" ]]; then
+    printf '%s\n' "$EXP001_JQ_BIN_CACHE"
+    return
+  fi
+
+  if [[ "${EXP001_JQ_BIN_OVERRIDE:-}" != "" ]]; then
+    target="$EXP001_JQ_BIN_OVERRIDE"
+    [[ -f "$target" ]] || die "EXP001_JQ_BIN_OVERRIDE가 regular file이 아닙니다: $target"
+    [[ -x "$target" ]] || die "EXP001_JQ_BIN_OVERRIDE가 executable이 아닙니다: $target"
+    [[ "$("$target" --version 2>/dev/null)" == "jq-$(lock_value version)" ]] \
+      || die "EXP001_JQ_BIN_OVERRIDE jq version이 lock과 일치하지 않습니다: $target"
+    EXP001_JQ_BIN_CACHE="$target"
+    printf '%s\n' "$target"
+    return
+  fi
+
   platform_key="$(jq_platform_key)"
   expected_sha="$(lock_value "${platform_key}_sha256")" || die "jq lock에서 SHA-256을 찾지 못했습니다: ${platform_key}_sha256"
   target="$(jq_path "$platform_key")"
   assert_jq_checksum "$target" "$expected_sha"
+  EXP001_JQ_BIN_CACHE="$target"
   printf '%s\n' "$target"
+}
+
+assert_text_file_lf_utf8_no_bom_final_newline() {
+  local file="$1"
+  local size
+  local first3
+  local last1
+  local last2
+  local without_nul_size
+
+  [[ -f "$file" ]] || {
+    printf '검증할 파일이 없습니다: %s\n' "$file" >&2
+    return 1
+  }
+  [[ -s "$file" ]] || {
+    printf '파일이 비어 있습니다: %s\n' "$file" >&2
+    return 1
+  }
+
+  first3="$(LC_ALL=C od -An -tx1 -N3 "$file" | tr -d ' \n')"
+  [[ "$first3" != "efbbbf" ]] || {
+    printf 'UTF-8 BOM이 포함되어 있습니다: %s\n' "$file" >&2
+    return 1
+  }
+
+  if LC_ALL=C grep -q $'\r' "$file"; then
+    printf 'CR byte가 포함되어 있습니다. LF만 허용합니다: %s\n' "$file" >&2
+    return 1
+  fi
+
+  size="$(wc -c <"$file" | tr -d ' ')"
+  without_nul_size="$(tr -d '\000' <"$file" | wc -c | tr -d ' ')"
+  [[ "$size" == "$without_nul_size" ]] || {
+    printf 'NUL byte가 포함되어 있습니다: %s\n' "$file" >&2
+    return 1
+  }
+
+  if command -v iconv >/dev/null 2>&1; then
+    iconv -f UTF-8 -t UTF-8 "$file" >/dev/null || {
+      printf 'UTF-8로 decode할 수 없는 byte가 있습니다: %s\n' "$file" >&2
+      return 1
+    }
+  fi
+
+  last1="$(tail -c 1 "$file" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
+  [[ "$last1" == "0a" ]] || {
+    printf '파일 마지막 byte가 LF가 아닙니다: %s\n' "$file" >&2
+    return 1
+  }
+
+  if [[ "$size" -ge 2 ]]; then
+    last2="$(tail -c 2 "$file" | LC_ALL=C od -An -tx1 | tr -d ' \n')"
+    [[ "$last2" != "0a0a" ]] || {
+      printf '파일 끝에 final newline이 두 번 이상 있습니다: %s\n' "$file" >&2
+      return 1
+    }
+  fi
+}
+
+jq_to_file() {
+  local destination="$1"
+  shift
+
+  local parent
+  local jq_bin
+  local jq_args=()
+  parent="$(dirname "$destination")"
+  [[ -d "$parent" ]] || {
+    printf 'destination parent directory가 없습니다: %s\n' "$destination" >&2
+    return 1
+  }
+  [[ ! -e "$destination" ]] || {
+    printf 'destination file이 이미 존재합니다: %s\n' "$destination" >&2
+    return 1
+  }
+
+  jq_bin="$(require_jq)" || return 1
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) jq_args=(-b) ;;
+  esac
+  if ! "$jq_bin" "${jq_args[@]}" "$@" >"$destination"; then
+    rm -f "$destination"
+    return 1
+  fi
+}
+
+promote_file_no_clobber() {
+  local temp_path="$1"
+  local final_path="$2"
+  local temp_dir
+  local final_dir
+
+  [[ -f "$temp_path" && ! -L "$temp_path" ]] || {
+    printf 'promotion source가 regular file이 아닙니다: %s\n' "$temp_path" >&2
+    return 1
+  }
+
+  temp_dir="$(cd "$(dirname "$temp_path")" && pwd -P)" || {
+    printf 'promotion source directory를 확인하지 못했습니다: %s\n' "$temp_path" >&2
+    return 1
+  }
+  final_dir="$(cd "$(dirname "$final_path")" && pwd -P)" || {
+    printf 'promotion destination directory를 확인하지 못했습니다: %s\n' "$final_path" >&2
+    return 1
+  }
+  [[ "$temp_dir" == "$final_dir" ]] || {
+    printf 'promotion source와 destination은 같은 directory여야 합니다: %s -> %s\n' "$temp_path" "$final_path" >&2
+    return 1
+  }
+  [[ ! -e "$final_path" && ! -L "$final_path" ]] || {
+    printf 'promotion destination이 이미 존재합니다: %s\n' "$final_path" >&2
+    return 1
+  }
+
+  if ! ln "$temp_path" "$final_path"; then
+    printf 'promotion hard link 생성에 실패했습니다: %s -> %s\n' "$temp_path" "$final_path" >&2
+    return 1
+  fi
+  if ! rm -f "$temp_path"; then
+    printf 'promotion temp cleanup에 실패했습니다. final은 유지합니다: %s\n' "$temp_path" >&2
+    return 1
+  fi
+}
+
+compare_formatted_response_semantics() {
+  local raw_file="$1"
+  local formatted_file="$2"
+  local jq_bin
+
+  jq_bin="$(require_jq)" || return 1
+  "$jq_bin" -e -s '.[0] == (.[1] | del(.resultFormatVersion, .elapsedSeconds))' "$raw_file" "$formatted_file" >/dev/null
+}
+
+format_response() {
+  local expected_path="$1"
+  local raw_file="$2"
+  local formatted_file="$3"
+  local expected_count="$4"
+
+  jq_to_file "$formatted_file" \
+    --arg expectedPath "$expected_path" \
+    --argjson expectedCount "$expected_count" \
+    -f "$EXP001_FORMAT_RESPONSE_FILTER" \
+    "$raw_file" || return 1
+
+  verify_response "$expected_path" "$formatted_file" "$expected_count" "v2" || return 1
+  assert_text_file_lf_utf8_no_bom_final_newline "$formatted_file" || return 1
+  compare_formatted_response_semantics "$raw_file" "$formatted_file" || return 1
 }
 
 http_status() {
@@ -796,11 +969,11 @@ verify_response() {
   local expected_path="$1"
   local file="$2"
   local expected_count="$3"
+  local mode="${4:-artifact}"
   local jq_bin
 
   jq_bin="$(require_jq)"
-  "$jq_bin" -e --arg expectedPath "$expected_path" --argjson expectedCount "$expected_count" -f "$EXP001_VALIDATE_RESPONSE_FILTER" "$file" >/dev/null \
-    || die "response JSON gate를 통과하지 못했습니다: $file"
+  "$jq_bin" -e --arg mode "$mode" --arg expectedPath "$expected_path" --argjson expectedCount "$expected_count" -f "$EXP001_VALIDATE_RESPONSE_FILTER" "$file" >/dev/null
 }
 
 call_benchmark_endpoint() {
@@ -808,18 +981,16 @@ call_benchmark_endpoint() {
   local output_file="$2"
   local count="$3"
   local url="$BASE_URL/internal/exp-001/$path"
-  local response_body
 
-  response_body="$(curl \
+  curl \
     --silent \
     --show-error \
     --fail \
     --max-time "$REQUEST_TIMEOUT_SECONDS" \
     --header "Content-Type: application/json" \
     --data "{\"count\":$count}" \
-    "$url")" || return 1
-
-  printf '%s' "$response_body" >"$output_file"
+    --output "$output_file" \
+    "$url"
 }
 
 cooldown() {
