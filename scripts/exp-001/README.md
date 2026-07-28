@@ -131,9 +131,21 @@ Timeout 후에는 애플리케이션 내부 작업이 계속될 수 있다. 이 
 
 ## Async-profiler Phase B
 
+Smoke readiness contract는 `GET /internal/exp-001/smoke/ready` HTTP `200` response의 exact JSON object `{ "status": "READY", "phase": "EXP001_SMOKE" }`이다. Smoke workload response는 structural JSON gate로 전체 문법, duplicate/unknown/missing key, wrong type, malformed/trailing garbage, size 초과, HTTP `409`/`500`을 fail-closed로 거부한다. Active profiler session 구간의 workload 실패와 JVM identity mismatch는 profiler stop을 먼저 시도한 뒤 실패로 보고한다.
+
+CPU actual engine은 JFR `jdk.ActiveSetting` event 중 `values.name=engine`의 `values.value`에서만 확인한다. `perf_events`이면 marker의 `selectedCpuEngine=cpu`, `ctimer`이면 `selectedCpuEngine=ctimer`로 기록하고 후속 CPU profile chunk는 marker 값을 사용한다. `engineVerification`은 `jfr-active-setting-engine:perf_events` 또는 `jfr-active-setting-engine:ctimer`만 허용하며, parser 실패나 sample hard threshold 미달이면 marker를 생성하지 않는다.
+
 CPU/allocation 원인 분석용 harness는 `scripts/exp-001/profiler/`에 분리한다.
 
 Phase B profiler harness는 Phase A official timing result를 갱신하지 않는다. Actual 50,000-row profile execution은 smoke 통과 후 별도 명시 실행에서만 허용하며, raw JFR/HTML/collapsed/log는 Git에 포함하지 않는다.
+
+Phase B smoke는 DB를 사용하지 않는 `exp001` 전용 endpoint 세 개로 profiler attach와 conversion을 검증한다. `GET /internal/exp-001/smoke/ready`가 준비되면 CPU smoke는 3초 workload와 CPU sample hard minimum `50`을 검증하고, allocation smoke는 64MiB allocation workload와 allocation sample/byte hard minimum을 검증한다. `selectedCpuEngine=cpu`는 JFR actual engine이 `perf_events`로 확인된 경우에만 허용하며, fallback은 `ctimer`로 marker에 기록한다.
+
+Smoke marker는 `markerFormatVersion=2`이며 sample count, sampled bytes, workload protocol version, engine verification을 포함한다. Marker는 cleanup 성공 후에만 final path로 승격된다. 실패 후 operator cleanup이 필요하면 다음 명령을 사용한다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/exp-001/profiler/windows/exp001-profile.ps1 cleanup -SecurityLevel 0
+```
 
 Profiler fixture는 다음 명령으로 별도 검증한다.
 
