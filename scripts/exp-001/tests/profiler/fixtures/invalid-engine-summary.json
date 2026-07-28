@@ -1,0 +1,19 @@
+{
+  "profileFormatVersion": 1,
+  "experiment": "EXP-001",
+  "phase": "Phase B async-profiler evidence",
+  "profileRunId": "20260728T010203Z-213a6362f778",
+  "sourceRevision": "213a6362f7789a93484d9aa49d3e7e93ded93876",
+  "harnessRevision": "213a6362f7789a93484d9aa49d3e7e93ded93876",
+  "runtime": {
+    "primaryRuntime": "docker-linux-x64"
+  },
+  "profiler": {
+    "version": "4.5"
+  },
+  "profiles": [],
+  "crossProfileValidation": {
+    "cpuEngineConsistent": false
+  },
+  "success": true
+}

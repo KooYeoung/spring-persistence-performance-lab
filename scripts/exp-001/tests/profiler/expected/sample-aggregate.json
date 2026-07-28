@@ -1,0 +1,117 @@
+{
+  "profileId": "cpu-jpa",
+  "event": "cpu",
+  "cpuEngine": "cpu",
+  "strategy": "jpa",
+  "interval": "10ms",
+  "repetitions": 2,
+  "totalRows": 100000,
+  "chunkCount": 2,
+  "validChunkCount": 2,
+  "sampleCount": 10,
+  "sampledValue": 10,
+  "normalizationUnit": "samples",
+  "normalizedSampledValuePer50000Rows": 5,
+  "categoryShare": [
+    {
+      "name": "application",
+      "value": 9,
+      "share": 0.9
+    },
+    {
+      "name": "hibernateJpa",
+      "value": 5,
+      "share": 0.5
+    },
+    {
+      "name": "jdbcDriver",
+      "value": 4,
+      "share": 0.4
+    },
+    {
+      "name": "jvmGcNative",
+      "value": 1,
+      "share": 0.1
+    }
+  ],
+  "topPackages": [
+    {
+      "name": "com.example.persistencebenchmark.persistence.jpa",
+      "value": 5
+    },
+    {
+      "name": "org.hibernate.engine.spi",
+      "value": 5
+    },
+    {
+      "name": "com.example.persistencebenchmark.persistence.jdbc",
+      "value": 4
+    },
+    {
+      "name": "org.postgresql.core.v3",
+      "value": 4
+    },
+    {
+      "name": "java.lang",
+      "value": 1
+    }
+  ],
+  "topClasses": [
+    {
+      "name": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService",
+      "value": 5
+    },
+    {
+      "name": "org.hibernate.engine.spi.ActionQueue",
+      "value": 5
+    },
+    {
+      "name": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService",
+      "value": 4
+    },
+    {
+      "name": "org.postgresql.core.v3.QueryExecutorImpl",
+      "value": 4
+    },
+    {
+      "name": "java.lang.Thread",
+      "value": 1
+    }
+  ],
+  "topMethods": [
+    {
+      "name": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll",
+      "value": 5
+    },
+    {
+      "name": "org.hibernate.engine.spi.ActionQueue.executeActions",
+      "value": 5
+    },
+    {
+      "name": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll",
+      "value": 4
+    },
+    {
+      "name": "org.postgresql.core.v3.QueryExecutorImpl.execute",
+      "value": 4
+    },
+    {
+      "name": "java.lang.Thread.run",
+      "value": 1
+    }
+  ],
+  "topStacks": [
+    {
+      "stack": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll;org.hibernate.engine.spi.ActionQueue.executeActions",
+      "value": 5
+    },
+    {
+      "stack": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll;org.postgresql.core.v3.QueryExecutorImpl.execute",
+      "value": 4
+    },
+    {
+      "stack": "java.lang.Thread.run",
+      "value": 1
+    }
+  ]
+}

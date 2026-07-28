@@ -14,5 +14,17 @@ out/
 
 artifacts/*
 !artifacts/README.md
+artifacts/exp-001/profiling/
 results/*
 !results/README.md
+!results/exp-001/
+results/exp-001/*
+!results/exp-001/profiling/
+results/exp-001/profiling/**
+!results/exp-001/profiling/*/
+!results/exp-001/profiling/*/metadata.md
+!results/exp-001/profiling/*/summary.json
+!results/exp-001/profiling/*/analysis.md
+!results/exp-001/profiling/*/manifest.md
+
+scripts/exp-001/profiler/.state/

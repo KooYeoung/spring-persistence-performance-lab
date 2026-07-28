@@ -1,0 +1,13 @@
+version=4.5
+tag=v4.5
+platform=linux-x64
+asset=async-profiler-4.5-linux-x64.tar.gz
+url=https://github.com/async-profiler/async-profiler/releases/download/v4.5/async-profiler-4.5-linux-x64.tar.gz
+sha256=89546fbb9ee0fc5496c7edd4099b0709489bc78b0d8057ccbb4b801f6b032b62
+size=447164
+archive_root=async-profiler-4.5-linux-x64
+install_dir=scripts/exp-001/.tools/async-profiler/linux-x64/4.5/async-profiler-4.5-linux-x64
+asprof=bin/asprof
+jfrconv=bin/jfrconv
+library=lib/libasyncProfiler.so
+license=Apache-2.0

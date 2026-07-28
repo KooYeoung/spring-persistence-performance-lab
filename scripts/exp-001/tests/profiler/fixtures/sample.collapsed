@@ -1,0 +1,4 @@
+com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll;org.hibernate.engine.spi.ActionQueue.executeActions 3
+com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll;org.hibernate.engine.spi.ActionQueue.executeActions 2
+com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll;org.postgresql.core.v3.QueryExecutorImpl.execute 4
+java.lang.Thread.run 1

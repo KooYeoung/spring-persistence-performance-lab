@@ -1,0 +1,43 @@
+name: exp001-profiler
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: persistence_lab
+      POSTGRES_USER: lab_user
+      POSTGRES_PASSWORD: lab_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab_user -d persistence_lab"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - exp001-profiler-postgres-data:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: ../../../..
+      dockerfile: scripts/exp-001/profiler/docker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18080:8080"
+    environment:
+      SERVER_PORT: "8080"
+      SPRING_PROFILES_ACTIVE: exp001
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/persistence_lab
+      SPRING_DATASOURCE_USERNAME: lab_user
+      SPRING_DATASOURCE_PASSWORD: lab_password
+      EXP001_APP_URL: http://127.0.0.1:8080
+      EXP001_ARTIFACT_ROOT: /artifacts/exp-001/profiling
+      EXP001_ASPROF_HOME: /opt/async-profiler
+    volumes:
+      - ../../.tools/async-profiler/linux-x64/4.5/async-profiler-4.5-linux-x64:/opt/async-profiler:ro
+      - ../../../../artifacts/exp-001/profiling:/artifacts/exp-001/profiling
+    init: true
+
+volumes:
+  exp001-profiler-postgres-data:
