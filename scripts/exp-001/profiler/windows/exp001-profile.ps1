@@ -25,6 +25,8 @@ $ComposeBase = Join-Path $DockerDir 'compose.yml'
 $ComposeSeccomp = Join-Path $DockerDir 'compose.seccomp.yml'
 $ComposeSysAdmin = Join-Path $DockerDir 'compose.sys-admin.yml'
 $ComposeProject = 'exp001-profiler'
+$DockerCommand = 'docker'
+$ProfilerOperationTrace = $null
 $RawRoot = Join-Path $ProjectRoot 'artifacts\exp-001\profiling'
 $TrackedRoot = Join-Path $ProjectRoot 'results\exp-001\profiling'
 $ExpectedRuntime = 'docker-linux-x64'
@@ -64,6 +66,94 @@ function Stop-Profile {
     }
     [Console]::Error.WriteLine("[$timestamp] ERROR: $Message")
     exit 1
+}
+
+function Write-ProfilerOperationTrace {
+    param([string] $Step)
+
+    if ($null -ne $script:ProfilerOperationTrace) {
+        [void] $script:ProfilerOperationTrace.Add($Step)
+    }
+}
+
+function Assert-ProfilerPathUnderRoot {
+    param(
+        [AllowNull()] [string] $Path,
+        [AllowNull()] [string] $ProjectRootAbs,
+        [string] $Description
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProjectRootAbs)) {
+        Stop-Profile 'Profiler project root is not initialized.'
+    }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        Stop-Profile "$Description path is not initialized."
+    }
+    if (-not (Test-Path -LiteralPath $ProjectRootAbs -PathType Container)) {
+        Stop-Profile "Profiler project root does not exist: $ProjectRootAbs"
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Stop-Profile "$Description path does not exist: $Path"
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $ProjectRootAbs).ProviderPath
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $root = $resolvedRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $rootPrefix = $root + [System.IO.Path]::DirectorySeparatorChar
+    if ($resolvedPath -ne $root -and -not $resolvedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Profile "$Description path escapes profiler project root: $Path"
+    }
+    return $resolvedPath
+}
+
+function Resolve-ProfilerProjectRoot {
+    param([AllowNull()] [string] $ProjectRootAbs)
+
+    if ([string]::IsNullOrWhiteSpace($ProjectRootAbs)) {
+        Stop-Profile 'Profiler project root is not initialized.'
+    }
+    if (-not (Test-Path -LiteralPath $ProjectRootAbs -PathType Container)) {
+        Stop-Profile "Profiler project root does not exist: $ProjectRootAbs"
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $ProjectRootAbs).ProviderPath
+    foreach ($relative in @(
+        'settings.gradle',
+        'AGENTS.md',
+        'scripts\exp-001\profiler\docker\compose.yml',
+        'scripts\exp-001\profiler\docker\compose.seccomp.yml',
+        'scripts\exp-001\profiler\docker\compose.sys-admin.yml'
+    )) {
+        $path = Join-Path $resolvedRoot $relative
+        if (-not (Test-Path -LiteralPath $path)) {
+            Stop-Profile "Profiler project root is missing required path: $relative"
+        }
+        Assert-ProfilerPathUnderRoot -Path $path -ProjectRootAbs $resolvedRoot -Description $relative | Out-Null
+    }
+    return $resolvedRoot
+}
+
+function Initialize-ProfilerContext {
+    Write-ProfilerOperationTrace -Step 'initialize-context'
+
+    $resolvedProjectRoot = Resolve-ProfilerProjectRoot -ProjectRootAbs $script:ProjectRoot
+    $script:ProjectRoot = $resolvedProjectRoot
+    $script:Exp001Root = Join-Path $resolvedProjectRoot 'scripts\exp-001'
+    $script:ProfilerRoot = Join-Path $script:Exp001Root 'profiler'
+    $script:ProfilerWindowsDir = Join-Path $script:ProfilerRoot 'windows'
+    $script:StateDir = Join-Path $script:ProfilerRoot '.state'
+    $script:SmokeStateFile = Join-Path $script:StateDir 'smoke-ready.json'
+    $script:LockFile = Join-Path $script:Exp001Root 'tools\async-profiler.lock'
+    $script:ConfigFile = Join-Path $script:ProfilerRoot 'shared\profile-config.json'
+    $script:OfficialManifestFile = Join-Path $script:ProfilerRoot 'shared\official-result-manifest.json'
+    $script:ValidateSummaryFilter = Join-Path $script:ProfilerRoot 'shared\validate-profile-summary.jq'
+    $script:AggregateFilter = Join-Path $script:ProfilerRoot 'shared\aggregate-collapsed.jq'
+    $script:DockerDir = Join-Path $script:ProfilerRoot 'docker'
+    $script:ComposeBase = Join-Path $script:DockerDir 'compose.yml'
+    $script:ComposeSeccomp = Join-Path $script:DockerDir 'compose.seccomp.yml'
+    $script:ComposeSysAdmin = Join-Path $script:DockerDir 'compose.sys-admin.yml'
+    $script:RawRoot = Join-Path $resolvedProjectRoot 'artifacts\exp-001\profiling'
+    $script:TrackedRoot = Join-Path $resolvedProjectRoot 'results\exp-001\profiling'
 }
 
 function Show-Help {
@@ -346,6 +436,8 @@ function Assert-ExtractedTreeSafe {
 }
 
 function Install-AsyncProfilerTool {
+    Initialize-ProfilerContext
+
     $lock = Read-AsyncProfilerLock
     $installDir = Get-AsyncProfilerInstallDir -Lock $lock
     if (Test-Path -LiteralPath $installDir) {
@@ -525,6 +617,8 @@ function Assert-OfficialResultGuard {
 }
 
 function Assert-ProfilerHarness {
+    Write-ProfilerOperationTrace -Step 'static-guard'
+
     Read-AsyncProfilerLock | Out-Null
     Assert-ProfileConfig | Out-Null
     Assert-DockerSecurityConfig
@@ -533,29 +627,97 @@ function Assert-ProfilerHarness {
 }
 
 function Get-ComposeFiles {
+    param([AllowNull()] [string] $ProjectRootAbs = $ProjectRoot)
+
+    $resolvedProjectRoot = Resolve-ProfilerProjectRoot -ProjectRootAbs $ProjectRootAbs
+    $dockerRoot = Join-Path $resolvedProjectRoot 'scripts\exp-001\profiler\docker'
+    $composeBasePath = Join-Path $dockerRoot 'compose.yml'
+    $composeSeccompPath = Join-Path $dockerRoot 'compose.seccomp.yml'
+    $composeSysAdminPath = Join-Path $dockerRoot 'compose.sys-admin.yml'
+
     if ($SecurityLevel -eq 0) {
-        return @($ComposeBase)
+        return @(
+            (Assert-ProfilerPathUnderRoot -Path $composeBasePath -ProjectRootAbs $resolvedProjectRoot -Description 'Level 0 Compose file')
+        )
     }
     if ($SecurityLevel -eq 1) {
-        return @($ComposeBase, $ComposeSeccomp)
+        return @(
+            (Assert-ProfilerPathUnderRoot -Path $composeBasePath -ProjectRootAbs $resolvedProjectRoot -Description 'Level 1 base Compose file'),
+            (Assert-ProfilerPathUnderRoot -Path $composeSeccompPath -ProjectRootAbs $resolvedProjectRoot -Description 'Level 1 seccomp Compose file')
+        )
     }
     if ($SecurityLevel -eq 2) {
-        return @($ComposeBase, $ComposeSysAdmin)
+        return @(
+            (Assert-ProfilerPathUnderRoot -Path $composeBasePath -ProjectRootAbs $resolvedProjectRoot -Description 'Level 2 base Compose file'),
+            (Assert-ProfilerPathUnderRoot -Path $composeSysAdminPath -ProjectRootAbs $resolvedProjectRoot -Description 'Level 2 SYS_ADMIN Compose file')
+        )
     }
     Stop-Profile "지원하지 않는 SecurityLevel입니다: $SecurityLevel"
+}
+
+function Invoke-ProfilerDocker {
+    param([string[]] $Arguments)
+
+    & $DockerCommand @Arguments
+}
+
+function Resolve-ProfilerDockerCommand {
+    if ([string]::IsNullOrWhiteSpace($DockerCommand)) {
+        Stop-Profile 'Docker command is not configured.'
+    }
+    $command = Get-Command -Name $DockerCommand -ErrorAction SilentlyContinue
+    if ($null -eq $command -or @('Application', 'ExternalScript') -notcontains [string] $command.CommandType) {
+        Stop-Profile "Docker command를 찾을 수 없습니다: $DockerCommand"
+    }
+}
+
+function Require-ProfilerDockerCompose {
+    param([AllowNull()] [string] $ProjectRootAbs)
+
+    $resolvedProjectRoot = Resolve-ProfilerProjectRoot -ProjectRootAbs $ProjectRootAbs
+    Resolve-ProfilerDockerCommand
+
+    Invoke-ProfilerDocker -Arguments @('info') *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Profile 'Docker Engine에 연결할 수 없습니다. Docker Desktop을 실행하세요. 권한 또는 Engine 연결 문제일 수 있습니다.'
+    }
+
+    Invoke-ProfilerDocker -Arguments @('compose', 'version') *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Profile 'docker compose를 사용할 수 없습니다. Docker Desktop의 Compose plugin을 확인하세요.'
+    }
+
+    $composeArgs = @()
+    foreach ($file in Get-ComposeFiles -ProjectRootAbs $resolvedProjectRoot) {
+        $composeArgs += @('-f', $file)
+    }
+    $composeArgs += @('-p', $ComposeProject, 'config', '--services')
+
+    $services = Invoke-ProfilerDocker -Arguments (@('compose') + $composeArgs) 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Profile 'Profiler Docker Compose config validation failed.'
+    }
+    $serviceList = @($services | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($service in @('postgres', 'app')) {
+        if ($serviceList -notcontains $service) {
+            Stop-Profile "Profiler Docker Compose service를 확인할 수 없습니다: $service"
+        }
+    }
 }
 
 function Invoke-Compose {
     param([string[]] $Arguments)
 
+    Write-ProfilerOperationTrace -Step 'compose'
+
     $composeArgs = @()
-    foreach ($file in Get-ComposeFiles) {
+    foreach ($file in Get-ComposeFiles -ProjectRootAbs $ProjectRoot) {
         $composeArgs += @('-f', $file)
     }
     $composeArgs += @('-p', $ComposeProject)
     $composeArgs += $Arguments
 
-    & docker compose @composeArgs
+    Invoke-ProfilerDocker -Arguments (@('compose') + $composeArgs)
     if ($LASTEXITCODE -ne 0) {
         Stop-Profile "docker compose 실행에 실패했습니다: $($Arguments -join ' ')"
     }
@@ -565,13 +727,13 @@ function Invoke-ComposeCapture {
     param([string[]] $Arguments)
 
     $composeArgs = @()
-    foreach ($file in Get-ComposeFiles) {
+    foreach ($file in Get-ComposeFiles -ProjectRootAbs $ProjectRoot) {
         $composeArgs += @('-f', $file)
     }
     $composeArgs += @('-p', $ComposeProject)
     $composeArgs += $Arguments
 
-    $output = & docker compose @composeArgs
+    $output = Invoke-ProfilerDocker -Arguments (@('compose') + $composeArgs)
     if ($LASTEXITCODE -ne 0) {
         Stop-Profile "docker compose 실행에 실패했습니다: $($Arguments -join ' ')"
     }
@@ -579,13 +741,15 @@ function Invoke-ComposeCapture {
 }
 
 function Invoke-ComposeDownForCleanup {
+    Write-ProfilerOperationTrace -Step 'compose-cleanup'
+
     $composeArgs = @()
-    foreach ($file in Get-ComposeFiles) {
+    foreach ($file in Get-ComposeFiles -ProjectRootAbs $ProjectRoot) {
         $composeArgs += @('-f', $file)
     }
     $composeArgs += @('-p', $ComposeProject, 'down', '-v', '--remove-orphans')
 
-    & docker compose @composeArgs
+    Invoke-ProfilerDocker -Arguments (@('compose') + $composeArgs)
     if ($LASTEXITCODE -ne 0) {
         throw 'docker compose down cleanup failed.'
     }
@@ -593,15 +757,15 @@ function Invoke-ComposeDownForCleanup {
 
 function Assert-ProfilerComposeResourcesCleaned {
     $filter = "label=com.docker.compose.project=$ComposeProject"
-    $containers = @(& docker ps -a -q --filter $filter | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $containers = @(Invoke-ProfilerDocker -Arguments @('ps', '-a', '-q', '--filter', $filter) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($LASTEXITCODE -ne 0) {
         throw 'docker container residual check failed.'
     }
-    $networks = @(& docker network ls -q --filter $filter | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $networks = @(Invoke-ProfilerDocker -Arguments @('network', 'ls', '-q', '--filter', $filter) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($LASTEXITCODE -ne 0) {
         throw 'docker network residual check failed.'
     }
-    $volumes = @(& docker volume ls -q --filter $filter | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $volumes = @(Invoke-ProfilerDocker -Arguments @('volume', 'ls', '-q', '--filter', $filter) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($LASTEXITCODE -ne 0) {
         throw 'docker volume residual check failed.'
     }
@@ -625,6 +789,8 @@ function Assert-ProfilerCleanupPath {
 }
 
 function Clear-ProfilerPartialArtifacts {
+    Write-ProfilerOperationTrace -Step 'partial-cleanup'
+
     if (Test-Path -LiteralPath $StateDir) {
         foreach ($file in @(Get-ChildItem -LiteralPath $StateDir -File -Filter 'smoke-ready.json.tmp.*' -ErrorAction SilentlyContinue)) {
             Assert-ProfilerCleanupPath -Path $file.FullName -Root $StateDir
@@ -643,6 +809,9 @@ function Clear-ProfilerPartialArtifacts {
 
 function Invoke-ProfilerCleanup {
     param([string] $FailureCode = 'SMOKE_CLEANUP_FAILED')
+
+    Resolve-ProfilerProjectRoot -ProjectRootAbs $ProjectRoot | Out-Null
+    Write-ProfilerOperationTrace -Step 'cleanup-scope'
 
     $errors = New-Object System.Collections.Generic.List[string]
     try {
@@ -666,12 +835,17 @@ function Invoke-ProfilerCleanup {
 }
 
 function Invoke-Cleanup {
+    Initialize-ProfilerContext
     Invoke-ProfilerCleanup -FailureCode 'TOOL_CLEANUP_FAILED'
     Write-ProfileLog 'profiler cleanup completed.'
 }
 
 function Assert-DockerReady {
-    Require-DockerCompose
+    param([AllowNull()] [string] $ProjectRootAbs)
+
+    Write-ProfilerOperationTrace -Step 'docker-ready'
+
+    Require-ProfilerDockerCompose -ProjectRootAbs $ProjectRootAbs
     Assert-AsyncProfilerInstalled | Out-Null
 }
 
@@ -880,8 +1054,9 @@ function Write-SmokeMarker {
 }
 
 function Invoke-Smoke {
+    Initialize-ProfilerContext
     Assert-ProfilerHarness
-    Assert-DockerReady
+    Assert-DockerReady -ProjectRootAbs $ProjectRoot
     New-Item -ItemType Directory -Force -Path $RawRoot, $StateDir | Out-Null
     $context = Get-SmokeContext
     if (Test-Path -LiteralPath $SmokeStateFile) {
@@ -988,6 +1163,8 @@ function Assert-SmokeReady {
 }
 
 function Invoke-Smoke {
+    Initialize-ProfilerContext
+
     $oldImportOnly = $env:EXP001_PROFILE_IMPORT_ONLY
     $failureMessage = ''
     $cleanupFailure = ''
@@ -998,7 +1175,7 @@ function Invoke-Smoke {
         $env:EXP001_PROFILE_IMPORT_ONLY = '1'
         try {
             Assert-ProfilerHarness
-            Assert-DockerReady
+            Assert-DockerReady -ProjectRootAbs $ProjectRoot
             New-Item -ItemType Directory -Force -Path $RawRoot, $StateDir | Out-Null
             $context = Get-SmokeContext
             if (Test-Path -LiteralPath $SmokeStateFile) {
@@ -1183,12 +1360,14 @@ function Invoke-ProfileChunk {
 }
 
 function Invoke-Profile {
+    Initialize-ProfilerContext
+
     if (-not $AllowActualProfile) {
         Stop-Profile 'actual 50,000-row profile execution은 -AllowActualProfile을 명시한 경우에만 허용됩니다.'
     }
     Assert-ProfilerHarness
-    Assert-DockerReady
     $smokeState = Assert-SmokeReady
+    Assert-DockerReady -ProjectRootAbs $ProjectRoot
 
     $dirty = (& git -C $ProjectRoot status --short)
     if ($LASTEXITCODE -ne 0) {
@@ -1245,6 +1424,8 @@ function Invoke-Profile {
 }
 
 function Invoke-ValidatePublication {
+    Initialize-ProfilerContext
+
     Assert-ProfilerHarness
     Require-Jq | Out-Null
 
@@ -1278,6 +1459,8 @@ function Invoke-ValidatePublication {
 
     Write-ProfileLog "profile publication 검증 완료: $trackedRunDir"
 }
+
+Initialize-ProfilerContext
 
 if ($env:EXP001_PROFILE_IMPORT_ONLY -eq '1') {
     return

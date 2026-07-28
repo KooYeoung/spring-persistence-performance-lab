@@ -52,6 +52,37 @@ function Assert-Fails {
     Assert-True $failed $Message
 }
 
+function Assert-FailsWith {
+    param(
+        [scriptblock] $Block,
+        [string] $ExpectedPattern,
+        [string] $Message
+    )
+
+    $failed = $false
+    $actual = ''
+    try {
+        & $Block | Out-Null
+    } catch {
+        $failed = $true
+        $actual = [string] $_.Exception.Message
+    }
+    Assert-True $failed $Message
+    Assert-True ($actual -match $ExpectedPattern) "$Message message mismatch: $actual"
+}
+
+function Assert-SequenceEquals {
+    param(
+        [string[]] $Actual,
+        [string[]] $Expected,
+        [string] $Message
+    )
+
+    $actualText = (@($Actual) -join ',')
+    $expectedText = (@($Expected) -join ',')
+    Assert-True ($actualText -eq $expectedText) "$Message expected=$expectedText actual=$actualText"
+}
+
 function Assert-BytesEqual {
     param(
         [string] $ExpectedPath,
@@ -358,6 +389,308 @@ function New-SmokeResultFixture {
     }
 }
 
+function New-ProfilerRootFixture {
+    param([string] $Name)
+
+    $root = Join-Path $tempRoot $Name
+    $docker = Join-Path $root 'scripts\exp-001\profiler\docker'
+    New-Item -ItemType Directory -Force -Path $docker | Out-Null
+    Write-Utf8File -Path (Join-Path $root 'settings.gradle') -Text "rootProject.name = 'fixture'`n"
+    Write-Utf8File -Path (Join-Path $root 'AGENTS.md') -Text "# fixture`n"
+    foreach ($file in @('compose.yml', 'compose.seccomp.yml', 'compose.sys-admin.yml')) {
+        Write-Utf8File -Path (Join-Path $docker $file) -Text "services:`n  postgres:`n    image: postgres:16`n  app:`n    image: app:fixture`n"
+    }
+    return (Resolve-Path -LiteralPath $root).ProviderPath
+}
+
+function New-FakeDockerCommand {
+    param([string] $Path)
+
+    Write-Utf8File -Path $Path -Text @'
+param([Parameter(ValueFromRemainingArguments = $true)][string[]] $DockerArgs)
+
+$logPath = $env:EXP001_FAKE_DOCKER_LOG
+if (-not [string]::IsNullOrWhiteSpace($logPath)) {
+    $line = ConvertTo-Json -InputObject ([ordered] @{ arguments = @($DockerArgs) }) -Compress
+    [System.IO.File]::AppendAllText($logPath, $line + [Environment]::NewLine, [System.Text.Encoding]::UTF8)
+}
+
+if ($DockerArgs.Count -eq 1 -and $DockerArgs[0] -eq 'info') {
+    exit 0
+}
+if ($DockerArgs.Count -eq 2 -and $DockerArgs[0] -eq 'compose' -and $DockerArgs[1] -eq 'version') {
+    exit 0
+}
+if ($DockerArgs.Count -gt 0 -and $DockerArgs[0] -eq 'ps') {
+    exit 0
+}
+if ($DockerArgs.Count -gt 0 -and $DockerArgs[0] -eq 'network') {
+    exit 0
+}
+if ($DockerArgs.Count -gt 0 -and $DockerArgs[0] -eq 'volume') {
+    exit 0
+}
+if ($DockerArgs.Count -gt 0 -and $DockerArgs[0] -eq 'compose') {
+    if ($DockerArgs -contains 'config' -and $DockerArgs -contains '--services') {
+        Write-Output 'postgres'
+        Write-Output 'app'
+        exit 0
+    }
+    exit 0
+}
+
+exit 1
+'@
+    return $Path
+}
+
+function Read-FakeDockerLog {
+    param([string] $Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return @()
+    }
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        [void] $entries.Add(@($line | ConvertFrom-Json))
+    }
+    return $entries.ToArray()
+}
+
+function Assert-NoFakeDockerCall {
+    param(
+        [string] $Path,
+        [string] $Message
+    )
+
+    $entries = @(Read-FakeDockerLog -Path $Path)
+    Assert-True ($entries.Count -eq 0) $Message
+}
+
+function Assert-ProfilerDockerPreflightFailsBeforeDocker {
+    param(
+        [AllowNull()] [string] $Root,
+        [string] $LogPath,
+        [string] $ExpectedMessage,
+        [string] $Message
+    )
+
+    Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
+    try {
+        Require-ProfilerDockerCompose -ProjectRootAbs $Root
+        Fail-Fixture "$Message should fail"
+    } catch {
+        Assert-True ($_.Exception.Message -match $ExpectedMessage) "$Message should use a precondition failure message"
+    }
+    Assert-NoFakeDockerCall -Path $LogPath -Message "$Message should not call Docker"
+}
+
+function Write-ProfileDispatchSmokeMarker {
+    param([string] $Path)
+
+    $parent = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+
+    $context = Get-SmokeContext
+    $config = Read-ProfileConfig
+    $marker = [ordered] @{
+        markerFormatVersion = $context['markerFormatVersion']
+        sourceRevision = $context['sourceRevision']
+        harnessRevision = $context['harnessRevision']
+        profilerVersion = $context['profilerVersion']
+        profilerAssetSha256 = $context['profilerAssetSha256']
+        securityLevel = $context['securityLevel']
+        selectedCpuEngine = 'cpu'
+        runtime = $context['runtime']
+        architecture = $context['architecture']
+        jdkVersion = $context['jdkVersion']
+        smokeProtocolVersion = $context['smokeProtocolVersion']
+        cpuWorkloadVersion = $context['cpuWorkloadVersion']
+        allocationWorkloadVersion = $context['allocationWorkloadVersion']
+        cpuSampleCount = [int64] $config.smoke.cpuWorkload.minimumSamples
+        allocationSampleCount = [int64] $config.smoke.allocationWorkload.minimumSamples
+        allocationSampledBytes = [int64] $config.smoke.allocationWorkload.minimumSampledBytes
+        engineVerification = $EngineVerificationPerfEvents
+        smokeSuccess = $true
+        createdAtUtc = '2026-07-28T00:00:00Z'
+    }
+    Write-JsonFile -Path $Path -Value $marker
+}
+
+function Write-ProfileDispatchInvalidSmokeMarker {
+    param([string] $Path)
+
+    $parent = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    Write-JsonFile -Path $Path -Value ([ordered] @{
+        markerFormatVersion = 2
+        smokeSuccess = $true
+    })
+}
+
+function Write-ProfileDispatchFakeGit {
+    param([string] $Directory)
+
+    New-Item -ItemType Directory -Force -Path $Directory | Out-Null
+    $path = Join-Path $Directory 'git.cmd'
+    Write-Utf8File -Path $path -Text @'
+@echo off
+if "%1"=="-C" (
+  if "%3"=="status" (
+    if "%4"=="--short" (
+      exit /b 0
+    )
+  )
+  if "%3"=="rev-parse" (
+    if "%4"=="HEAD" (
+      echo %EXP001_PROFILE_FIXTURE_GIT_HEAD%
+      exit /b 0
+    )
+  )
+)
+echo unexpected git args: %* 1>&2
+exit /b 1
+'@
+    return $path
+}
+
+function Invoke-ProfileDispatchCase {
+    param(
+        [string] $Name,
+        [bool] $Approved,
+        [ValidateSet('missing', 'invalid', 'valid')] [string] $Marker,
+        [ValidateSet('not-called', 'fail', 'ready')] [string] $Docker,
+        [string[]] $ExpectedLog,
+        [string] $ExpectedError,
+        [switch] $FakeCleanGit
+    )
+
+    $caseRoot = Join-Path $tempRoot "profile-dispatch-$Name"
+    New-Item -ItemType Directory -Force -Path $caseRoot | Out-Null
+
+    $originalFunctions = @{}
+    foreach ($functionName in @(
+        'Initialize-ProfilerContext',
+        'Assert-ProfilerHarness',
+        'Assert-SmokeReady',
+        'Assert-DockerReady',
+        'Invoke-Compose',
+        'Invoke-ProfilerDocker'
+    )) {
+        $originalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function).ScriptBlock
+    }
+
+    $oldAllowActualProfile = $AllowActualProfile
+    $oldProfileRunId = $ProfileRunId
+    $oldSecurityLevel = $SecurityLevel
+    $oldStateDir = $StateDir
+    $oldSmokeStateFile = $SmokeStateFile
+    $oldRawRoot = $RawRoot
+    $oldPath = $env:PATH
+    $oldFakeGitHead = $env:EXP001_PROFILE_FIXTURE_GIT_HEAD
+    $originalLocation = (Get-Location).ProviderPath
+
+    try {
+        $script:ProfileDispatchCallLog = New-Object System.Collections.Generic.List[string]
+        $script:ProfileDispatchDockerCommandCalls = New-Object System.Collections.Generic.List[string]
+        $script:ProfileDispatchDockerMode = $Docker
+        $script:ProfileDispatchOriginalInitializeProfilerContext = $originalFunctions['Initialize-ProfilerContext']
+        $script:ProfileDispatchOriginalAssertSmokeReady = $originalFunctions['Assert-SmokeReady']
+
+        $script:AllowActualProfile = $Approved
+        $script:ProfileRunId = "20260728T000000Z-$('{0:x7}' -f ($Name.GetHashCode() -band 0xfffffff))"
+        $script:SecurityLevel = 0
+        $script:StateDir = Join-Path $caseRoot 'state'
+        $script:SmokeStateFile = Join-Path $script:StateDir 'smoke-ready.json'
+        $script:RawRoot = Join-Path $caseRoot 'raw'
+        $script:ProfileDispatchStateDir = $script:StateDir
+        $script:ProfileDispatchSmokeStateFile = $script:SmokeStateFile
+        $script:ProfileDispatchRawRoot = $script:RawRoot
+        New-Item -ItemType Directory -Force -Path $script:StateDir, $script:RawRoot | Out-Null
+
+        if ($Marker -eq 'valid') {
+            Write-ProfileDispatchSmokeMarker -Path $script:SmokeStateFile
+        } elseif ($Marker -eq 'invalid') {
+            Write-ProfileDispatchInvalidSmokeMarker -Path $script:SmokeStateFile
+        }
+
+        function Initialize-ProfilerContext {
+            & $script:ProfileDispatchOriginalInitializeProfilerContext
+            $script:StateDir = $script:ProfileDispatchStateDir
+            $script:SmokeStateFile = $script:ProfileDispatchSmokeStateFile
+            $script:RawRoot = $script:ProfileDispatchRawRoot
+        }
+
+        function Assert-ProfilerHarness {
+            [void] $script:ProfileDispatchCallLog.Add('approval')
+        }
+
+        function Assert-SmokeReady {
+            [void] $script:ProfileDispatchCallLog.Add('smoke-marker')
+            return (& $script:ProfileDispatchOriginalAssertSmokeReady)
+        }
+
+        function Assert-DockerReady {
+            param([AllowNull()] [string] $ProjectRootAbs)
+
+            [void] $script:ProfileDispatchCallLog.Add('docker-readiness')
+            if ($script:ProfileDispatchDockerMode -eq 'fail') {
+                Stop-Profile 'fixture Docker readiness failure'
+            }
+        }
+
+        function Invoke-Compose {
+            param([string[]] $Arguments)
+
+            [void] $script:ProfileDispatchCallLog.Add('profile-runtime')
+            Stop-Profile 'fixture profile runtime stop'
+        }
+
+        function Invoke-ProfilerDocker {
+            param([string[]] $Arguments)
+
+            [void] $script:ProfileDispatchDockerCommandCalls.Add(($Arguments -join ' '))
+            Stop-Profile 'fixture attempted Docker executable call'
+        }
+
+        if ($FakeCleanGit) {
+            $head = Get-SourceRevision
+            $fakeGitDir = Join-Path $caseRoot 'fake-git'
+            Write-ProfileDispatchFakeGit -Directory $fakeGitDir | Out-Null
+            $env:EXP001_PROFILE_FIXTURE_GIT_HEAD = $head
+            $env:PATH = "$fakeGitDir;$oldPath"
+        }
+
+        Assert-FailsWith -Block { Invoke-Profile } -ExpectedPattern $ExpectedError -Message "profile dispatch case failed as expected: $Name"
+        Assert-SequenceEquals -Actual $script:ProfileDispatchCallLog.ToArray() -Expected $ExpectedLog -Message "profile dispatch order changed: $Name"
+        Assert-True ($script:ProfileDispatchDockerCommandCalls.Count -eq 0) "profile dispatch should not call Docker executable: $Name"
+    } finally {
+        Set-Location -LiteralPath $originalLocation
+        foreach ($entry in $originalFunctions.GetEnumerator()) {
+            Set-Item -Path "function:$($entry.Key)" -Value $entry.Value
+        }
+        $script:AllowActualProfile = $oldAllowActualProfile
+        $script:ProfileRunId = $oldProfileRunId
+        $script:SecurityLevel = $oldSecurityLevel
+        $script:StateDir = $oldStateDir
+        $script:SmokeStateFile = $oldSmokeStateFile
+        $script:RawRoot = $oldRawRoot
+        $env:PATH = $oldPath
+        $env:EXP001_PROFILE_FIXTURE_GIT_HEAD = $oldFakeGitHead
+        Remove-Variable -Name ProfileDispatchCallLog -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchDockerCommandCalls -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchDockerMode -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchOriginalInitializeProfilerContext -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchOriginalAssertSmokeReady -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchStateDir -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchSmokeStateFile -Scope Script -ErrorAction SilentlyContinue
+        Remove-Variable -Name ProfileDispatchRawRoot -Scope Script -ErrorAction SilentlyContinue
+    }
+}
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "exp001-profiler-fixtures-$PID"
 if (Test-Path -LiteralPath $tempRoot) {
     Fail-Fixture "temp directory already exists: $tempRoot"
@@ -382,6 +715,124 @@ try {
     Assert-Fails { Assert-ArchiveMemberSafe -Member 'other-root/bin/asprof' -ExpectedRoot 'async-profiler-4.5-linux-x64' } 'unexpected archive root should fail'
 
     Assert-DockerPolicy
+
+    $fakeDocker = New-FakeDockerCommand -Path (Join-Path $tempRoot 'fake docker.ps1')
+    $oldDockerCommand = $DockerCommand
+    $oldFakeDockerLog = $env:EXP001_FAKE_DOCKER_LOG
+    $oldSecurityLevel = $SecurityLevel
+    $oldTrace = $ProfilerOperationTrace
+    $originalLocation = (Get-Location).ProviderPath
+    try {
+        $DockerCommand = $fakeDocker
+        $SecurityLevel = 0
+
+        $validRoot = New-ProfilerRootFixture -Name 'root with spaces'
+        $validLog = Join-Path $tempRoot 'docker-valid.log'
+        $env:EXP001_FAKE_DOCKER_LOG = $validLog
+        Require-ProfilerDockerCompose -ProjectRootAbs $validRoot
+        $validEntries = @(Read-FakeDockerLog -Path $validLog)
+        Assert-True ($validEntries.Count -eq 3) 'valid root Docker preflight should call info, compose version, and compose config only'
+        $configEntries = @($validEntries | Where-Object { @($_.arguments) -contains 'config' })
+        Assert-True ($configEntries.Count -eq 1) 'valid root should run exactly one compose config check'
+        $configArgs = @($configEntries[0].arguments)
+        $rootArgs = @($configArgs | Where-Object { ([string] $_).StartsWith($validRoot, [System.StringComparison]::OrdinalIgnoreCase) })
+        Assert-True ($rootArgs.Count -eq 1) 'valid root should be passed as one compose file argument'
+        Assert-True ($rootArgs[0] -eq (Join-Path $validRoot 'scripts\exp-001\profiler\docker\compose.yml')) 'path with spaces should remain one argument'
+
+        $nullLog = Join-Path $tempRoot 'docker-null.log'
+        $env:EXP001_FAKE_DOCKER_LOG = $nullLog
+        Assert-ProfilerDockerPreflightFailsBeforeDocker -Root $null -LogPath $nullLog -ExpectedMessage 'Profiler project root is not initialized' -Message 'null root'
+        Assert-ProfilerDockerPreflightFailsBeforeDocker -Root '' -LogPath $nullLog -ExpectedMessage 'Profiler project root is not initialized' -Message 'empty root'
+        Assert-ProfilerDockerPreflightFailsBeforeDocker -Root '   ' -LogPath $nullLog -ExpectedMessage 'Profiler project root is not initialized' -Message 'whitespace root'
+        Assert-ProfilerDockerPreflightFailsBeforeDocker -Root (Join-Path $tempRoot 'missing-root') -LogPath $nullLog -ExpectedMessage 'does not exist' -Message 'invalid root'
+
+        $wrongRoot = Join-Path $tempRoot 'wrong-root'
+        New-Item -ItemType Directory -Force -Path $wrongRoot | Out-Null
+        Write-Utf8File -Path (Join-Path $wrongRoot 'settings.gradle') -Text "rootProject.name = 'wrong'`n"
+        Assert-ProfilerDockerPreflightFailsBeforeDocker -Root $wrongRoot -LogPath $nullLog -ExpectedMessage 'missing required path' -Message 'wrong repository root'
+
+        foreach ($location in @($ProjectRoot, (Join-Path $ProjectRoot 'scripts'), (Join-Path $tempRoot 'outside cwd'))) {
+            New-Item -ItemType Directory -Force -Path $location | Out-Null
+            $cwdLog = Join-Path $tempRoot ("docker-cwd-$([System.Guid]::NewGuid().ToString('N')).log")
+            $env:EXP001_FAKE_DOCKER_LOG = $cwdLog
+            Push-Location -LiteralPath $location
+            try {
+                Require-ProfilerDockerCompose -ProjectRootAbs $validRoot
+            } finally {
+                Pop-Location
+            }
+            $cwdEntries = @(Read-FakeDockerLog -Path $cwdLog)
+            $cwdConfig = @($cwdEntries | Where-Object { @($_.arguments) -contains 'config' })
+            Assert-True ($cwdConfig.Count -eq 1) 'Docker preflight should be independent from current directory'
+            Assert-True (@($cwdConfig[0].arguments) -contains (Join-Path $validRoot 'scripts\exp-001\profiler\docker\compose.yml')) 'current directory should not change the compose root'
+        }
+
+        $ProfilerOperationTrace = New-Object System.Collections.Generic.List[string]
+        $orderLog = Join-Path $tempRoot 'docker-order.log'
+        $env:EXP001_FAKE_DOCKER_LOG = $orderLog
+        Initialize-ProfilerContext
+        Assert-ProfilerHarness
+        Assert-DockerReady -ProjectRootAbs $ProjectRoot
+        Invoke-Compose -Arguments @('config', '--services') | Out-Null
+        $order = $ProfilerOperationTrace.ToArray() -join ','
+        Assert-True ($order -eq 'initialize-context,static-guard,docker-ready,compose') "smoke helper call order changed: $order"
+
+        $ProfilerOperationTrace = New-Object System.Collections.Generic.List[string]
+        $cleanupLog = Join-Path $tempRoot 'docker-cleanup.log'
+        $env:EXP001_FAKE_DOCKER_LOG = $cleanupLog
+        Initialize-ProfilerContext
+        Invoke-ProfilerCleanup -FailureCode 'TOOL_CLEANUP_FAILED'
+        $cleanupOrder = $ProfilerOperationTrace.ToArray() -join ','
+        Assert-True ($cleanupOrder -eq 'initialize-context,cleanup-scope,compose-cleanup,partial-cleanup') "cleanup helper call order changed: $cleanupOrder"
+    } finally {
+        Set-Location -LiteralPath $originalLocation
+        $DockerCommand = $oldDockerCommand
+        $SecurityLevel = $oldSecurityLevel
+        $ProfilerOperationTrace = $oldTrace
+        $env:EXP001_FAKE_DOCKER_LOG = $oldFakeDockerLog
+    }
+
+    Invoke-ProfileDispatchCase `
+        -Name 'approval-missing' `
+        -Approved $false `
+        -Marker 'missing' `
+        -Docker 'not-called' `
+        -ExpectedLog @() `
+        -ExpectedError 'AllowActualProfile'
+
+    Invoke-ProfileDispatchCase `
+        -Name 'marker-missing' `
+        -Approved $true `
+        -Marker 'missing' `
+        -Docker 'not-called' `
+        -ExpectedLog @('approval', 'smoke-marker') `
+        -ExpectedError 'Actual profile requires a successful smoke marker'
+
+    Invoke-ProfileDispatchCase `
+        -Name 'marker-invalid' `
+        -Approved $true `
+        -Marker 'invalid' `
+        -Docker 'not-called' `
+        -ExpectedLog @('approval', 'smoke-marker') `
+        -ExpectedError 'smoke marker schema key'
+
+    Invoke-ProfileDispatchCase `
+        -Name 'marker-valid-docker-failure' `
+        -Approved $true `
+        -Marker 'valid' `
+        -Docker 'fail' `
+        -ExpectedLog @('approval', 'smoke-marker', 'docker-readiness') `
+        -ExpectedError 'fixture Docker readiness failure'
+
+    Invoke-ProfileDispatchCase `
+        -Name 'marker-valid-docker-ready' `
+        -Approved $true `
+        -Marker 'valid' `
+        -Docker 'ready' `
+        -ExpectedLog @('approval', 'smoke-marker', 'docker-readiness', 'profile-runtime') `
+        -ExpectedError 'fixture profile runtime stop' `
+        -FakeCleanGit
+
     Assert-ProfileConfig | Out-Null
 
     $markerPath = Join-Path $tempRoot 'smoke-ready.json'
