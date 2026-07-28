@@ -45,6 +45,35 @@
       }
     ]
   },
+  "smoke": {
+    "smokeProtocolVersion": "exp001-smoke-v1",
+    "readinessPath": "/internal/exp-001/smoke/ready",
+    "readinessStatus": "READY",
+    "readinessPhase": "EXP001_SMOKE",
+    "cpuPath": "/internal/exp-001/smoke/cpu",
+    "allocationPath": "/internal/exp-001/smoke/allocation",
+    "responseMaxBytes": 4096,
+    "readinessTimeoutSeconds": 90,
+    "readinessPollSeconds": 1,
+    "cpuWorkload": {
+      "version": "cpu-v1",
+      "targetDurationMillis": 3000,
+      "successLowerBoundMillis": 2500,
+      "minimumSamples": 50,
+      "recommendedSamples": 100,
+      "actualEngineSource": "jfr-print-json"
+    },
+    "allocationWorkload": {
+      "version": "allocation-v1",
+      "allocatedBytes": 67108864,
+      "chunkBytes": 1048576,
+      "chunks": 64,
+      "minimumSamples": 8,
+      "recommendedSamples": 16,
+      "minimumSampledBytes": 4194304,
+      "recommendedSampledBytes": 8388608
+    }
+  },
   "profiler": {
     "version": "4.5",
     "tag": "v4.5",

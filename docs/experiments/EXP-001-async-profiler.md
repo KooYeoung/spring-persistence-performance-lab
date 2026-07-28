@@ -69,7 +69,19 @@ Docker security escalation은 Level 0부터 시작한다.
 
 Actual 50,000-row profile 전에 smoke를 통과해야 한다.
 
-Smoke workload는 idle JVM attach와 tiny output conversion이다. EXP-001 endpoint 50,000건 호출은 수행하지 않는다.
+Smoke workload는 DB를 사용하지 않는 `exp001` 전용 endpoint 호출과 tiny output conversion이다. EXP-001 저장 endpoint 50,000건 호출은 수행하지 않는다.
+
+Smoke endpoint:
+
+- readiness: `GET /internal/exp-001/smoke/ready`
+- CPU workload: `POST /internal/exp-001/smoke/cpu`
+- allocation workload: `POST /internal/exp-001/smoke/allocation`
+
+Readiness response는 HTTP `200`에서 exact JSON object `{ "status": "READY", "phase": "EXP001_SMOKE" }`만 허용한다. Smoke workload response는 structural JSON gate로 whole input consumption, exact key set, duplicate/unknown/missing key rejection, type checking, integer policy, checksum, body size `4096` bytes 이하를 검증한다. Malformed JSON, trailing garbage, string `"true"`, numeric string, decimal/exponent/negative/overflow integer, HTTP `409`/`500`은 fail-closed로 실패한다.
+
+Active profiler session이 시작된 뒤 workload gate failure 또는 JVM identity mismatch가 발생해도 harness는 profiler stop을 best-effort로 수행한 뒤 실패를 반환한다. Stop failure는 원래 오류와 함께 보고하며 event 성공으로 처리하지 않는다. JFR conversion과 sample threshold validation은 stop 성공 후에만 수행한다.
+
+CPU actual engine은 `jfr print --json --events jdk.ActiveSetting` 출력의 `jdk.ActiveSetting` event에서 `values.name=engine`인 `values.value`만 읽는다. Accepted actual engine은 `perf_events`, `ctimer`이고 unrelated object의 `engine` field와 stack/class 문자열은 무시한다. `engineVerification`은 `jfr-active-setting-engine:perf_events` 또는 `jfr-active-setting-engine:ctimer`만 허용한다. Parser 실패, conflicting/missing/unknown engine, sample hard threshold 미달, cleanup 실패 시 marker는 생성하지 않는다.
 
 Smoke 확인 항목:
 
@@ -85,7 +97,9 @@ Smoke 확인 항목:
 - artifact volume write
 - cleanup
 
-Smoke가 실패하면 actual profile execution을 금지한다. 성공 marker는 source revision, harness revision, profiler version, profiler asset SHA, security level, runtime, architecture, JDK identity, `selectedCpuEngine`을 exact schema로 기록한다. Profile action은 현재 값과 marker가 모두 일치할 때만 실행하며 CPU chunk는 marker의 `selectedCpuEngine`을 사용한다.
+Smoke가 실패하면 actual profile execution을 금지한다. 성공 marker는 `markerFormatVersion=2` exact schema로 source revision, harness revision, profiler version, profiler asset SHA, security level, runtime, architecture, JDK identity, `selectedCpuEngine`, smoke/workload protocol version, sample count, sampled bytes, engine verification을 기록한다. Profile action은 현재 값과 marker가 모두 일치할 때만 실행하며 CPU chunk는 marker의 `selectedCpuEngine`을 사용한다.
+
+`selectedCpuEngine=cpu`는 CPU smoke JFR의 actual engine이 `perf_events`로 확인될 때만 허용한다. `cpu` start가 실패하거나 actual engine이 `ctimer`이면 marker에는 `selectedCpuEngine=ctimer`를 기록하고, 이후 CPU chunk는 explicit `ctimer` event를 사용한다. JFR actual engine을 정확히 하나 추출하지 못하면 `ENGINE_DETECTION_UNRESOLVED`로 실패한다.
 
 ## Recording Model
 
@@ -142,6 +156,21 @@ Target filters:
 Filtered share는 전체 profile의 절대 비율로 해석하지 않는다. `analysis.md`에는 full profile과 target-method-filtered view의 경계를 명시한다.
 
 ## Thresholds
+
+Smoke CPU sample count:
+
+- recommended: `>= 100`
+- hard minimum: `< 50`이면 fail
+
+Smoke allocation sample count:
+
+- recommended: `>= 16`
+- hard minimum: `< 8`이면 fail
+
+Smoke allocation sampled bytes:
+
+- recommended: `>= 8MiB`
+- hard minimum: `< 4MiB`이면 fail
 
 CPU sample count:
 
@@ -255,6 +284,12 @@ Smoke:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\exp-001\profiler\windows\exp001-profile.ps1 smoke -SecurityLevel 0
+```
+
+Cleanup:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\exp-001\profiler\windows\exp001-profile.ps1 cleanup -SecurityLevel 0
 ```
 
 Actual profile:

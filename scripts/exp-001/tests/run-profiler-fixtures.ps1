@@ -334,6 +334,30 @@ function New-FakeProc {
     Write-Utf8File -Path (Join-Path $pidDir 'stat') -Text (($fields -join ' ') + "`n")
 }
 
+function New-SmokeResultFixture {
+    param(
+        [object] $Context,
+        [string] $SelectedCpuEngine = 'cpu',
+        [string] $EngineVerification = $EngineVerificationPerfEvents,
+        [int64] $CpuSampleCount = 50,
+        [int64] $AllocationSampleCount = 8,
+        [int64] $AllocationSampledBytes = 4194304
+    )
+
+    return [ordered] @{
+        markerFormatVersion = 2
+        smokeSuccess = $true
+        selectedCpuEngine = $SelectedCpuEngine
+        smokeProtocolVersion = $Context['smokeProtocolVersion']
+        cpuWorkloadVersion = $Context['cpuWorkloadVersion']
+        allocationWorkloadVersion = $Context['allocationWorkloadVersion']
+        cpuSampleCount = $CpuSampleCount
+        allocationSampleCount = $AllocationSampleCount
+        allocationSampledBytes = $AllocationSampledBytes
+        engineVerification = $EngineVerification
+    }
+}
+
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) "exp001-profiler-fixtures-$PID"
 if (Test-Path -LiteralPath $tempRoot) {
     Fail-Fixture "temp directory already exists: $tempRoot"
@@ -358,23 +382,38 @@ try {
     Assert-Fails { Assert-ArchiveMemberSafe -Member 'other-root/bin/asprof' -ExpectedRoot 'async-profiler-4.5-linux-x64' } 'unexpected archive root should fail'
 
     Assert-DockerPolicy
+    Assert-ProfileConfig | Out-Null
 
     $markerPath = Join-Path $tempRoot 'smoke-ready.json'
     $oldSmokeStateFile = $SmokeStateFile
     $SmokeStateFile = $markerPath
     $context = Get-SmokeContext
-    Write-SmokeMarker -Context $context -SelectedCpuEngine 'cpu'
+    $validSmokeResult = New-SmokeResultFixture -Context $context
+    $containerSmokePath = Join-Path $tempRoot 'container-smoke-result.json'
+    Write-JsonFile -Path $containerSmokePath -Value $validSmokeResult
+    $readContainerSmoke = Read-SmokeResult -SmokeResultPath $containerSmokePath
+    Assert-True ([string] $readContainerSmoke.engineVerification -eq $EngineVerificationPerfEvents) 'container smoke result should pass'
+    Write-SmokeMarker -Context $context -SmokeResult $readContainerSmoke
     $state = Assert-SmokeReady
+    Assert-True ([int] $state.markerFormatVersion -eq 2) 'marker v2 should pass'
     Assert-True ([string] $state.selectedCpuEngine -eq 'cpu') 'cpu marker should pass'
-    Assert-Fails { Write-SmokeMarker -Context $context -SelectedCpuEngine 'cpu' } 'smoke marker no-clobber should fail'
+    Assert-Fails { Write-SmokeMarker -Context $context -SmokeResult $readContainerSmoke } 'smoke marker no-clobber should fail'
+    $badContainerSmoke = New-SmokeResultFixture -Context $context -CpuSampleCount 49
+    Write-JsonFile -Path $containerSmokePath -Value $badContainerSmoke
+    Assert-Fails { Read-SmokeResult -SmokeResultPath $containerSmokePath } 'container smoke CPU sample threshold should fail'
 
     foreach ($case in @(
+        @{ Name = 'v1-rejected'; Key = 'markerFormatVersion'; Value = 1 },
         @{ Name = 'source-mismatch'; Key = 'sourceRevision'; Value = '0000000000000000000000000000000000000000' },
         @{ Name = 'harness-mismatch'; Key = 'harnessRevision'; Value = '0000000000000000000000000000000000000000' },
         @{ Name = 'version-mismatch'; Key = 'profilerVersion'; Value = '0.0' },
         @{ Name = 'sha-mismatch'; Key = 'profilerAssetSha256'; Value = ('0' * 64) },
         @{ Name = 'level-mismatch'; Key = 'securityLevel'; Value = 2 },
         @{ Name = 'engine-mismatch'; Key = 'selectedCpuEngine'; Value = 'wall' },
+        @{ Name = 'engine-verification-mismatch'; Key = 'engineVerification'; Value = $EngineVerificationCtimer },
+        @{ Name = 'cpu-sample-threshold'; Key = 'cpuSampleCount'; Value = 49 },
+        @{ Name = 'allocation-sample-threshold'; Key = 'allocationSampleCount'; Value = 7 },
+        @{ Name = 'allocation-byte-threshold'; Key = 'allocationSampledBytes'; Value = 4194303 },
         @{ Name = 'success-false'; Key = 'smokeSuccess'; Value = $false }
     )) {
         Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
@@ -389,6 +428,13 @@ try {
             runtime = $context['runtime']
             architecture = $context['architecture']
             jdkVersion = $context['jdkVersion']
+            smokeProtocolVersion = $context['smokeProtocolVersion']
+            cpuWorkloadVersion = $context['cpuWorkloadVersion']
+            allocationWorkloadVersion = $context['allocationWorkloadVersion']
+            cpuSampleCount = 50
+            allocationSampleCount = 8
+            allocationSampledBytes = 4194304
+            engineVerification = $EngineVerificationPerfEvents
             smokeSuccess = $true
             createdAtUtc = '2026-07-28T00:00:00Z'
         }
@@ -403,6 +449,29 @@ try {
     Assert-True ((Resolve-ProfileEventForChunk -Profile ([pscustomobject] @{ event = 'cpu' }) -CpuEngine 'ctimer') -eq 'ctimer') 'ctimer marker must propagate to CPU chunk'
     Assert-True ((Resolve-ProfileEventForChunk -Profile ([pscustomobject] @{ event = 'cpu' }) -CpuEngine 'cpu') -eq 'cpu') 'cpu marker must propagate to CPU chunk'
     Assert-True ((Resolve-ProfileEventForChunk -Profile ([pscustomobject] @{ event = 'alloc' }) -CpuEngine 'ctimer') -eq 'alloc') 'alloc chunks must keep alloc event'
+
+    $oldRawRoot = $RawRoot
+    $oldStateDir = $StateDir
+    $RawRoot = Join-Path $tempRoot 'raw-cleanup'
+    $StateDir = Join-Path $tempRoot 'state-cleanup'
+    try {
+        $smokeRaw = Join-Path $RawRoot 'smoke-demo\raw\smoke'
+        New-Item -ItemType Directory -Force -Path $smokeRaw, $StateDir | Out-Null
+        $rawTemp = Join-Path $smokeRaw 'cpu.jfr.tmp.123'
+        $rawFinal = Join-Path $smokeRaw 'cpu.jfr'
+        $stateTemp = Join-Path $StateDir 'smoke-ready.json.tmp.123'
+        Write-Utf8File -Path $rawTemp -Text 'partial'
+        Write-Utf8File -Path $rawFinal -Text 'final'
+        Write-Utf8File -Path $stateTemp -Text 'partial'
+        Clear-ProfilerPartialArtifacts
+        Assert-True (-not (Test-Path -LiteralPath $rawTemp)) 'raw temp artifact should be removed'
+        Assert-True (-not (Test-Path -LiteralPath $stateTemp)) 'state temp marker should be removed'
+        Assert-True (Test-Path -LiteralPath $rawFinal) 'final artifact should remain'
+        Assert-Fails { Assert-ProfilerCleanupPath -Path (Join-Path $tempRoot 'escape.tmp') -Root $RawRoot } 'cleanup path escape should fail'
+    } finally {
+        $RawRoot = $oldRawRoot
+        $StateDir = $oldStateDir
+    }
 
     $aggregateManifest = New-AggregationManifest
     $aggregateManifestPath = Join-Path $tempRoot 'aggregate-manifest.json'
@@ -526,6 +595,72 @@ try {
         Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-validate-inputs', 'cpu-jpa', 'cpu', 'cpu', 'jpa', '10ms', '0', '50000')) -ne 0) 'invalid repetition should fail'
         Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-validate-inputs', 'cpu-jpa', 'cpu', 'cpu', 'jpa', '10ms', '1', '49999')) -ne 0) 'count mismatch should fail'
         Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-validate-output', '/tmp/escape.response.raw')) -ne 0) 'output traversal should fail'
+
+        $readyResponse = Join-Path $tempRoot 'smoke-ready-response.json'
+        $cpuResponse = Join-Path $tempRoot 'smoke-cpu-response.json'
+        $allocationResponse = Join-Path $tempRoot 'smoke-allocation-response.json'
+        Write-Utf8File -Path $readyResponse -Text '{"status":"READY","phase":"EXP001_SMOKE"}'
+        Write-Utf8File -Path $cpuResponse -Text '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2500,"checksum":"0123456789abcdef"}'
+        Write-Utf8File -Path $allocationResponse -Text '{"success":true,"workload":"allocation","allocatedBytes":67108864,"chunkBytes":1048576,"chunks":64,"checksum":"fedcba9876543210"}'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-assert-ready-response', (Convert-ToGitBashPath -Path $readyResponse))) -eq 0) 'smoke ready response parser should pass'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-assert-cpu-response', (Convert-ToGitBashPath -Path $cpuResponse))) -eq 0) 'CPU smoke response parser should pass'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-assert-allocation-response', (Convert-ToGitBashPath -Path $allocationResponse))) -eq 0) 'allocation smoke response parser should pass'
+        foreach ($case in @(
+            @{ Name = 'ready-status-missing'; Text = '{"phase":"EXP001_SMOKE"}' },
+            @{ Name = 'ready-status-wrong'; Text = '{"status":"STARTING","phase":"EXP001_SMOKE"}' },
+            @{ Name = 'ready-phase-missing'; Text = '{"status":"READY"}' },
+            @{ Name = 'ready-phase-wrong'; Text = '{"status":"READY","phase":"POSTGRESQL_READY"}' },
+            @{ Name = 'ready-unknown-field'; Text = '{"status":"READY","phase":"EXP001_SMOKE","extra":"x"}' },
+            @{ Name = 'ready-malformed'; Text = '{"status":"READY","phase":' }
+        )) {
+            $badReady = Join-Path $tempRoot "$($case.Name).json"
+            Write-Utf8File -Path $badReady -Text $case.Text
+            Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-assert-ready-response', (Convert-ToGitBashPath -Path $badReady))) -ne 0) "smoke ready response parser should fail: $($case.Name)"
+        }
+        $badCpuResponse = Join-Path $tempRoot 'smoke-cpu-response-low-duration.json'
+        Write-Utf8File -Path $badCpuResponse -Text '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2499,"checksum":"0123456789abcdef"}'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-assert-cpu-response', (Convert-ToGitBashPath -Path $badCpuResponse))) -ne 0) 'low CPU smoke duration should fail'
+
+        $counterGood = Join-Path $tempRoot 'counter-good.collapsed'
+        $counterZero = Join-Path $tempRoot 'counter-zero.collapsed'
+        $counterMalformed = Join-Path $tempRoot 'counter-malformed.collapsed'
+        $counterOverflow = Join-Path $tempRoot 'counter-overflow.collapsed'
+        Write-Utf8File -Path $counterGood -Text "a;b 1`nc 2`n"
+        Write-Utf8File -Path $counterZero -Text "a;b 0`n"
+        Write-Utf8File -Path $counterMalformed -Text "a;b nope`n"
+        Write-Utf8File -Path $counterOverflow -Text "a;b 9007199254740992`n"
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-collapsed-total', (Convert-ToGitBashPath -Path $counterGood))) -eq 0) 'collapsed counter parser should pass'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-collapsed-total', (Convert-ToGitBashPath -Path $counterZero))) -ne 0) 'zero collapsed counter should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-collapsed-total', (Convert-ToGitBashPath -Path $counterMalformed))) -ne 0) 'malformed collapsed counter should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-collapsed-total', (Convert-ToGitBashPath -Path $counterOverflow))) -ne 0) 'overflow collapsed counter should fail'
+
+        $engineGood = Join-Path $tempRoot 'engine-good.json'
+        $engineCtimer = Join-Path $tempRoot 'engine-ctimer.json'
+        $engineConflicting = Join-Path $tempRoot 'engine-conflicting.json'
+        $engineNoActiveSetting = Join-Path $tempRoot 'engine-no-active-setting.json'
+        $engineMissing = Join-Path $tempRoot 'engine-missing.json'
+        $engineUnknown = Join-Path $tempRoot 'engine-unknown.json'
+        $engineUnrelated = Join-Path $tempRoot 'engine-unrelated.json'
+        $engineStackOnly = Join-Path $tempRoot 'engine-stack-only.json'
+        $engineMalformed = Join-Path $tempRoot 'engine-malformed.json'
+        Write-Utf8File -Path $engineGood -Text '{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}}]}}'
+        Write-Utf8File -Path $engineCtimer -Text '{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"ctimer"}}]}}'
+        Write-Utf8File -Path $engineConflicting -Text '{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}},{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"ctimer"}}]}}'
+        Write-Utf8File -Path $engineNoActiveSetting -Text '{"recording":{"events":[{"type":"jdk.CPULoad","values":{"name":"engine","value":"perf_events"}}]}}'
+        Write-Utf8File -Path $engineMissing -Text '{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"period","value":"10 ms"}}]}}'
+        Write-Utf8File -Path $engineUnknown -Text '{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"itimer"}}]}}'
+        Write-Utf8File -Path $engineUnrelated -Text '{"recording":{"events":[{"type":"com.example.StackFrame","values":{"method":"com.example.ctimer.Engine","engine":"ctimer"}},{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}}]}}'
+        Write-Utf8File -Path $engineStackOnly -Text '{"recording":{"events":[{"type":"com.example.StackFrame","values":{"method":"com.example.ctimer.Engine","engine":"ctimer"}}]}}'
+        Write-Utf8File -Path $engineMalformed -Text '{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}}]'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineGood))) -eq 0) 'perf_events parser should pass'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineCtimer))) -eq 0) 'ctimer parser should pass'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineUnrelated))) -eq 0) 'unrelated engine field should be ignored'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineConflicting))) -ne 0) 'conflicting engine parser should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineNoActiveSetting))) -ne 0) 'missing ActiveSetting parser should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineMissing))) -ne 0) 'missing engine parser should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineUnknown))) -ne 0) 'unknown engine parser should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineStackOnly))) -ne 0) 'stack string engine parser should fail'
+        Assert-True ((Invoke-ContainerFixture -Arguments @('fixture-parse-engine', (Convert-ToGitBashPath -Path $engineMalformed))) -ne 0) 'malformed engine parser should fail'
     }
 
     foreach ($path in @(
