@@ -80,6 +80,16 @@ assert_profile_config() {
     .profileConfigVersion == 1
     and .experiment == "EXP-001"
     and .rowsPerInvocation == 50000
+    and .smoke.smokeProtocolVersion == "exp001-smoke-v1"
+    and .smoke.readinessStatus == "READY"
+    and .smoke.readinessPhase == "EXP001_SMOKE"
+    and .smoke.responseMaxBytes == 4096
+    and .smoke.cpuWorkload.version == "cpu-v1"
+    and .smoke.cpuWorkload.successLowerBoundMillis == 2500
+    and .smoke.cpuWorkload.minimumSamples == 50
+    and .smoke.allocationWorkload.version == "allocation-v1"
+    and .smoke.allocationWorkload.allocatedBytes == 67108864
+    and .smoke.allocationWorkload.minimumSampledBytes == 4194304
     and (.profileOrder | length == 4)
     and all(.profiles[]; ((.event == "cpu" or .event == "ctimer" or .event == "alloc")
       and (.strategy == "jpa" or .strategy == "jdbc")
@@ -234,6 +244,192 @@ write_fake_proc() {
   printf '123 (java) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 %s\n' "$start" >"$dir/stat"
 }
 
+write_json_fixture() {
+  local path="$1"
+  local text="$2"
+  printf '%s\n' "$text" >"$path"
+}
+
+assert_response_fixture_failure() {
+  local name="$1"
+  local action="$2"
+  local text="$3"
+  local path="$temp_root/${name}.json"
+  write_json_fixture "$path" "$text"
+  assert_failure run_container_fixture '' '' "$action" "$path"
+}
+
+assert_response_fixture_success() {
+  local name="$1"
+  local action="$2"
+  local text="$3"
+  local path="$temp_root/${name}.json"
+  write_json_fixture "$path" "$text"
+  assert_success run_container_fixture '' '' "$action" "$path"
+}
+
+write_fake_container_tools() {
+  local root="$1"
+  mkdir -p "$root/bin" "$root/lib"
+  : >"$root/lib/libasyncProfiler.so"
+  cat >"$root/bin/curl" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+output=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    http://*|https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+printf 'curl\n' >>"${EXP001_FAKE_CURL_LOG:?}"
+body="${EXP001_FAKE_CURL_BODY:?}"
+case "$url" in
+  */internal/exp-001/smoke/ready) body="${EXP001_FAKE_CURL_READY_BODY:-$body}" ;;
+  */internal/exp-001/smoke/cpu) body="${EXP001_FAKE_CURL_CPU_BODY:-$body}" ;;
+  */internal/exp-001/smoke/allocation) body="${EXP001_FAKE_CURL_ALLOCATION_BODY:-$body}" ;;
+esac
+if [[ -n "$output" ]]; then
+  cat "$body" >"$output"
+else
+  cat "$body"
+fi
+if [[ -n "${EXP001_FAKE_IDENTITY_AFTER_CURL:-}" ]]; then
+  printf '123 (java) S 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 %s\n' "$EXP001_FAKE_IDENTITY_AFTER_CURL" >"${EXP001_FAKE_PROC_ROOT:?}/${EXP001_FAKE_PID:?}/stat"
+fi
+if [[ -n "$output" ]]; then
+  printf '%s' "${EXP001_FAKE_CURL_STATUS:-200}"
+fi
+exit "${EXP001_FAKE_CURL_EXIT:-0}"
+SH
+  cat >"$root/bin/asprof" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${EXP001_FAKE_ASPROF_LOG:?}"
+case "${1:-}" in
+  --version)
+    printf 'async-profiler 4.5\n'
+    ;;
+  start)
+    [[ "${EXP001_FAKE_ASPROF_START_FAIL:-0}" != "1" ]] || exit 7
+    ;;
+  stop)
+    [[ "${EXP001_FAKE_ASPROF_STOP_FAIL:-0}" != "1" ]] || exit 8
+    output=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -f) output="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [[ -n "$output" ]]; then
+      printf 'fake-jfr\n' >"$output"
+    fi
+    ;;
+  *)
+    exit 9
+    ;;
+esac
+SH
+  cat >"$root/bin/jfrconv" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${EXP001_FAKE_JFRCONV_LOG:?}"
+[[ "${EXP001_FAKE_JFRCONV_FAIL:-0}" != "1" ]] || exit 6
+output=""
+for arg in "$@"; do
+  output="$arg"
+done
+case " $* " in
+  *" --total "*) printf 'com.example.Allocation 8388608\n' >"$output" ;;
+  *" --alloc "*) printf 'com.example.Allocation 16\n' >"$output" ;;
+  *) printf 'com.example.Cpu 100\n' >"$output" ;;
+esac
+SH
+  cat >"$root/bin/jfr" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${EXP001_FAKE_JFR_LOG:?}"
+[[ "${EXP001_FAKE_JFR_FAIL:-0}" != "1" ]] || exit 5
+cat "${EXP001_FAKE_JFR_JSON:?}"
+SH
+  chmod +x "$root/bin/curl" "$root/bin/asprof" "$root/bin/jfrconv" "$root/bin/jfr"
+}
+
+run_fake_smoke_event() {
+  local proc_root="$1"
+  local smoke_dir="$2"
+  local body="$3"
+  local engine_json="$4"
+  shift 4
+  env \
+    EXP001_PROC_ROOT="$proc_root" \
+    EXP001_ASPROF_HOME="$fake_tools" \
+    EXP001_CURL_BIN="$fake_tools/bin/curl" \
+    EXP001_JFR_BIN="$fake_tools/bin/jfr" \
+    EXP001_FAKE_CURL_BODY="$body" \
+    EXP001_FAKE_CURL_LOG="$fake_curl_log" \
+    EXP001_FAKE_ASPROF_LOG="$fake_asprof_log" \
+    EXP001_FAKE_JFRCONV_LOG="$fake_jfrconv_log" \
+    EXP001_FAKE_JFR_LOG="$fake_jfr_log" \
+    EXP001_FAKE_JFR_JSON="$engine_json" \
+    SPRING_PROFILES_ACTIVE=exp001 \
+    "$@" "$CONTAINER_RUNNER" fixture-smoke-one-event cpu 10ms 123 987654 "$smoke_dir" cpu >/dev/null 2>&1
+}
+
+run_fake_smoke() {
+  local proc_root="$1"
+  local jcmd_file="$2"
+  local artifact_root="$3"
+  local smoke_id="$4"
+  local ready_body="$5"
+  local cpu_body="$6"
+  local allocation_body="$7"
+  local engine_json="$8"
+  env \
+    EXP001_PROC_ROOT="$proc_root" \
+    EXP001_JCMD_LIST_FILE="$jcmd_file" \
+    EXP001_ARTIFACT_ROOT="$artifact_root" \
+    EXP001_SMOKE_ID="$smoke_id" \
+    EXP001_ASPROF_HOME="$fake_tools" \
+    EXP001_CURL_BIN="$fake_tools/bin/curl" \
+    EXP001_JFR_BIN="$fake_tools/bin/jfr" \
+    EXP001_FAKE_CURL_BODY="$ready_body" \
+    EXP001_FAKE_CURL_READY_BODY="$ready_body" \
+    EXP001_FAKE_CURL_CPU_BODY="$cpu_body" \
+    EXP001_FAKE_CURL_ALLOCATION_BODY="$allocation_body" \
+    EXP001_FAKE_CURL_LOG="$fake_curl_log" \
+    EXP001_FAKE_ASPROF_LOG="$fake_asprof_log" \
+    EXP001_FAKE_JFRCONV_LOG="$fake_jfrconv_log" \
+    EXP001_FAKE_JFR_LOG="$fake_jfr_log" \
+    EXP001_FAKE_JFR_JSON="$engine_json" \
+    SPRING_PROFILES_ACTIVE=exp001 \
+    "$CONTAINER_RUNNER" smoke >/dev/null 2>&1
+}
+
+assert_file_contains() {
+  local file="$1"
+  local expected="$2"
+  grep -F -- "$expected" "$file" >/dev/null || fail "expected file to contain '$expected': $file"
+}
+
+assert_file_not_contains() {
+  local file="$1"
+  local unexpected="$2"
+  if [[ -f "$file" ]] && grep -F -- "$unexpected" "$file" >/dev/null; then
+    fail "file should not contain '$unexpected': $file"
+  fi
+}
+
+reset_fake_tool_logs() {
+  : >"$fake_curl_log"
+  : >"$fake_asprof_log"
+  : >"$fake_jfrconv_log"
+  : >"$fake_jfr_log"
+}
+
 run_container_fixture() {
   local proc_root="${1:-}"
   local jcmd_file="${2:-}"
@@ -250,6 +446,12 @@ EXP001_JQ_BIN_CACHE="$JQ_BIN"
 export EXP001_JQ_BIN_CACHE
 tmp_parent="${TMPDIR:-/tmp}"
 temp_root="$(mktemp -d "$tmp_parent/exp001-profiler-fixtures.XXXXXX")"
+fake_tools="$temp_root/fake-tools"
+fake_curl_log="$temp_root/fake-curl.log"
+fake_asprof_log="$temp_root/fake-asprof.log"
+fake_jfrconv_log="$temp_root/fake-jfrconv.log"
+fake_jfr_log="$temp_root/fake-jfr.log"
+write_fake_container_tools "$fake_tools"
 
 cleanup() {
   local resolved_temp
@@ -359,6 +561,213 @@ assert_failure run_container_fixture '' '' fixture-validate-inputs cpu-jpa cpu c
 assert_failure run_container_fixture '' '' fixture-validate-inputs cpu-jpa cpu cpu jpa 10ms 1 49999
 assert_failure run_container_fixture '' '' fixture-validate-inputs alloc-jpa cpu cpu jpa 10ms 1 50000
 assert_failure run_container_fixture '' '' fixture-validate-output /tmp/escape.response.raw
+
+ready_response="$temp_root/smoke-ready-response.json"
+cpu_response="$temp_root/smoke-cpu-response.json"
+allocation_response="$temp_root/smoke-allocation-response.json"
+write_json_fixture "$ready_response" '{"status":"READY","phase":"EXP001_SMOKE"}'
+write_json_fixture "$cpu_response" '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2500,"checksum":"0123456789abcdef"}'
+write_json_fixture "$allocation_response" '{"success":true,"workload":"allocation","allocatedBytes":67108864,"chunkBytes":1048576,"chunks":64,"checksum":"fedcba9876543210"}'
+assert_success run_container_fixture '' '' fixture-assert-ready-response "$ready_response"
+assert_success run_container_fixture '' '' fixture-assert-cpu-response "$cpu_response"
+assert_success run_container_fixture '' '' fixture-assert-allocation-response "$allocation_response"
+assert_response_fixture_success ready-reordered fixture-assert-ready-response '{"phase":"EXP001_SMOKE","status":"READY"}'
+
+assert_response_fixture_failure ready-status-missing fixture-assert-ready-response '{"phase":"EXP001_SMOKE"}'
+assert_response_fixture_failure ready-status-wrong fixture-assert-ready-response '{"status":"STARTING","phase":"EXP001_SMOKE"}'
+assert_response_fixture_failure ready-phase-missing fixture-assert-ready-response '{"status":"READY"}'
+assert_response_fixture_failure ready-phase-wrong fixture-assert-ready-response '{"status":"READY","phase":"POSTGRESQL_READY"}'
+assert_response_fixture_failure ready-unknown-field fixture-assert-ready-response '{"status":"READY","phase":"EXP001_SMOKE","extra":"x"}'
+assert_response_fixture_failure ready-malformed fixture-assert-ready-response '{"status":"READY","phase":'
+assert_response_fixture_failure ready-truncated fixture-assert-ready-response '{"status":"READY"'
+assert_response_fixture_failure ready-trailing-garbage fixture-assert-ready-response '{"status":"READY","phase":"EXP001_SMOKE"} trailing'
+assert_response_fixture_failure ready-duplicate-key fixture-assert-ready-response '{"status":"READY","status":"READY","phase":"EXP001_SMOKE"}'
+assert_response_fixture_failure ready-wrong-type fixture-assert-ready-response '{"status":true,"phase":"EXP001_SMOKE"}'
+
+assert_response_fixture_failure cpu-low-duration fixture-assert-cpu-response '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2499,"checksum":"0123456789abcdef"}'
+assert_response_fixture_failure cpu-wrong-boolean fixture-assert-cpu-response '{"success":"true","workload":"cpu","iterations":1000,"durationMillis":2500,"checksum":"0123456789abcdef"}'
+assert_response_fixture_failure cpu-wrong-workload fixture-assert-cpu-response '{"success":true,"workload":"allocation","iterations":1000,"durationMillis":2500,"checksum":"0123456789abcdef"}'
+assert_response_fixture_failure cpu-negative-integer fixture-assert-cpu-response '{"success":true,"workload":"cpu","iterations":-1,"durationMillis":2500,"checksum":"0123456789abcdef"}'
+assert_response_fixture_failure cpu-decimal-integer fixture-assert-cpu-response '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2500.5,"checksum":"0123456789abcdef"}'
+assert_response_fixture_failure cpu-integer-overflow fixture-assert-cpu-response '{"success":true,"workload":"cpu","iterations":9223372036854775808,"durationMillis":2500,"checksum":"0123456789abcdef"}'
+assert_response_fixture_failure cpu-invalid-checksum fixture-assert-cpu-response '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2500,"checksum":"0123456789ABCDEF"}'
+assert_response_fixture_failure cpu-missing-key fixture-assert-cpu-response '{"success":true,"workload":"cpu","durationMillis":2500,"checksum":"0123456789abcdef"}'
+
+assert_response_fixture_failure allocation-byte-mismatch fixture-assert-allocation-response '{"success":true,"workload":"allocation","allocatedBytes":67108863,"chunkBytes":1048576,"chunks":64,"checksum":"fedcba9876543210"}'
+assert_response_fixture_failure allocation-number-string fixture-assert-allocation-response '{"success":true,"workload":"allocation","allocatedBytes":"67108864","chunkBytes":1048576,"chunks":64,"checksum":"fedcba9876543210"}'
+
+large_response="$temp_root/smoke-response-too-large.json"
+: >"$large_response"
+for _ in $(seq 1 4097); do
+  printf 'x' >>"$large_response"
+done
+assert_failure run_container_fixture '' '' fixture-assert-ready-response "$large_response"
+
+http_ok="$temp_root/http-ok.response.raw"
+assert_success env \
+  EXP001_CURL_BIN="$fake_tools/bin/curl" \
+  EXP001_FAKE_CURL_BODY="$ready_response" \
+  EXP001_FAKE_CURL_LOG="$fake_curl_log" \
+  EXP001_FAKE_CURL_STATUS=200 \
+  SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-http-request GET http://127.0.0.1:8080/internal/exp-001/smoke/ready "$http_ok" 200 2
+http_conflict="$temp_root/http-conflict.response.raw"
+assert_failure env \
+  EXP001_CURL_BIN="$fake_tools/bin/curl" \
+  EXP001_FAKE_CURL_BODY="$ready_response" \
+  EXP001_FAKE_CURL_LOG="$fake_curl_log" \
+  EXP001_FAKE_CURL_STATUS=409 \
+  SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-http-request POST http://127.0.0.1:8080/internal/exp-001/smoke/cpu "$http_conflict" 200 2
+http_server_error="$temp_root/http-server-error.response.raw"
+assert_failure env \
+  EXP001_CURL_BIN="$fake_tools/bin/curl" \
+  EXP001_FAKE_CURL_BODY="$ready_response" \
+  EXP001_FAKE_CURL_LOG="$fake_curl_log" \
+  EXP001_FAKE_CURL_STATUS=500 \
+  SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-http-request POST http://127.0.0.1:8080/internal/exp-001/smoke/cpu "$http_server_error" 200 2
+http_large="$temp_root/http-large.response.raw"
+assert_failure env \
+  EXP001_CURL_BIN="$fake_tools/bin/curl" \
+  EXP001_FAKE_CURL_BODY="$large_response" \
+  EXP001_FAKE_CURL_LOG="$fake_curl_log" \
+  EXP001_FAKE_CURL_STATUS=200 \
+  SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-http-request GET http://127.0.0.1:8080/internal/exp-001/smoke/ready "$http_large" 200 2
+
+counter_good="$temp_root/counter-good.collapsed"
+counter_zero="$temp_root/counter-zero.collapsed"
+counter_malformed="$temp_root/counter-malformed.collapsed"
+counter_overflow="$temp_root/counter-overflow.collapsed"
+printf 'a;b 1\nc 2\n' >"$counter_good"
+printf 'a;b 0\n' >"$counter_zero"
+printf 'a;b nope\n' >"$counter_malformed"
+printf 'a;b 9007199254740992\n' >"$counter_overflow"
+assert_success run_container_fixture '' '' fixture-collapsed-total "$counter_good"
+assert_failure run_container_fixture '' '' fixture-collapsed-total "$counter_zero"
+assert_failure run_container_fixture '' '' fixture-collapsed-total "$counter_malformed"
+assert_failure run_container_fixture '' '' fixture-collapsed-total "$counter_overflow"
+
+engine_good="$temp_root/engine-good.json"
+engine_ctimer="$temp_root/engine-ctimer.json"
+engine_duplicate="$temp_root/engine-duplicate.json"
+engine_no_active_setting="$temp_root/engine-no-active-setting.json"
+engine_missing="$temp_root/engine-missing.json"
+engine_unknown="$temp_root/engine-unknown.json"
+engine_unrelated="$temp_root/engine-unrelated.json"
+engine_stack_only="$temp_root/engine-stack-only.json"
+engine_malformed="$temp_root/engine-malformed.json"
+cat >"$engine_good" <<'JSON'
+{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}}]}}
+JSON
+cat >"$engine_ctimer" <<'JSON'
+{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"ctimer"}}]}}
+JSON
+cat >"$engine_duplicate" <<'JSON'
+{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}},{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"ctimer"}}]}}
+JSON
+cat >"$engine_no_active_setting" <<'JSON'
+{"recording":{"events":[{"type":"jdk.CPULoad","values":{"name":"engine","value":"perf_events"}}]}}
+JSON
+cat >"$engine_missing" <<'JSON'
+{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"period","value":"10 ms"}}]}}
+JSON
+cat >"$engine_unknown" <<'JSON'
+{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"itimer"}}]}}
+JSON
+cat >"$engine_unrelated" <<'JSON'
+{"recording":{"events":[{"type":"com.example.StackFrame","values":{"method":"com.example.ctimer.Engine","engine":"ctimer"}},{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}}]}}
+JSON
+cat >"$engine_stack_only" <<'JSON'
+{"recording":{"events":[{"type":"com.example.StackFrame","values":{"method":"com.example.ctimer.Engine","engine":"ctimer"}}]}}
+JSON
+cat >"$engine_malformed" <<'JSON'
+{"recording":{"events":[{"type":"jdk.ActiveSetting","values":{"name":"engine","value":"perf_events"}}]
+JSON
+assert_success run_container_fixture '' '' fixture-parse-engine "$engine_good"
+assert_success run_container_fixture '' '' fixture-parse-engine "$engine_ctimer"
+assert_success run_container_fixture '' '' fixture-parse-engine "$engine_unrelated"
+assert_failure run_container_fixture '' '' fixture-parse-engine "$engine_duplicate"
+assert_failure run_container_fixture '' '' fixture-parse-engine "$engine_no_active_setting"
+assert_failure run_container_fixture '' '' fixture-parse-engine "$engine_missing"
+assert_failure run_container_fixture '' '' fixture-parse-engine "$engine_unknown"
+assert_failure run_container_fixture '' '' fixture-parse-engine "$engine_stack_only"
+assert_failure run_container_fixture '' '' fixture-parse-engine "$engine_malformed"
+
+smoke_fixture_proc="$temp_root/smoke-proc"
+write_fake_proc "$smoke_fixture_proc" 123 "$uid"
+smoke_jcmd_file="$temp_root/smoke-jcmd.txt"
+printf '123 /app/app.jar\n' >"$smoke_jcmd_file"
+reset_fake_tool_logs
+smoke_artifact_root="$temp_root/full-smoke-artifacts"
+smoke_marker_id="smoke-marker-ctimer"
+assert_success run_fake_smoke "$smoke_fixture_proc" "$smoke_jcmd_file" "$smoke_artifact_root" "$smoke_marker_id" \
+  "$ready_response" "$cpu_response" "$allocation_response" "$engine_ctimer"
+smoke_marker="$smoke_artifact_root/$smoke_marker_id/raw/smoke/smoke-ready.json"
+assert_file_contains "$smoke_marker" '"markerFormatVersion":2'
+assert_file_contains "$smoke_marker" '"selectedCpuEngine":"ctimer"'
+assert_file_contains "$smoke_marker" '"engineVerification":"jfr-active-setting-engine:ctimer"'
+
+cpu_bad_for_smoke="$temp_root/smoke-cpu-bad-response.json"
+write_json_fixture "$cpu_bad_for_smoke" '{"success":true,"workload":"cpu","iterations":1000,"durationMillis":2499,"checksum":"0123456789abcdef"}'
+
+reset_fake_tool_logs
+smoke_success_dir="$temp_root/smoke-event-success"
+mkdir -p "$smoke_success_dir"
+assert_success run_fake_smoke_event "$smoke_fixture_proc" "$smoke_success_dir" "$cpu_response" "$engine_good"
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+assert_file_contains "$fake_jfr_log" 'print --json --events jdk.ActiveSetting'
+
+reset_fake_tool_logs
+smoke_start_fail_dir="$temp_root/smoke-event-start-fail"
+mkdir -p "$smoke_start_fail_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_start_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_ASPROF_START_FAIL=1
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_not_contains "$fake_asprof_log" 'stop'
+assert_file_not_contains "$fake_curl_log" 'curl'
+
+reset_fake_tool_logs
+smoke_http_fail_dir="$temp_root/smoke-event-http-fail"
+mkdir -p "$smoke_http_fail_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_http_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_CURL_STATUS=500
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+
+reset_fake_tool_logs
+smoke_response_fail_dir="$temp_root/smoke-event-response-fail"
+mkdir -p "$smoke_response_fail_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_response_fail_dir" "$cpu_bad_for_smoke" "$engine_good"
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+
+reset_fake_tool_logs
+write_fake_proc "$smoke_fixture_proc" 123 "$uid"
+smoke_identity_fail_dir="$temp_root/smoke-event-identity-fail"
+mkdir -p "$smoke_identity_fail_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_identity_fail_dir" "$cpu_response" "$engine_good" \
+  EXP001_FAKE_IDENTITY_AFTER_CURL=111111 EXP001_FAKE_PROC_ROOT="$smoke_fixture_proc" EXP001_FAKE_PID=123
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+
+reset_fake_tool_logs
+write_fake_proc "$smoke_fixture_proc" 123 "$uid"
+smoke_stop_fail_dir="$temp_root/smoke-event-stop-fail"
+mkdir -p "$smoke_stop_fail_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_stop_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_ASPROF_STOP_FAIL=1
+assert_file_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_not_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+
+reset_fake_tool_logs
+smoke_conversion_fail_dir="$temp_root/smoke-event-conversion-fail"
+mkdir -p "$smoke_conversion_fail_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_conversion_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_JFRCONV_FAIL=1
+assert_file_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
 
 for path in \
   scripts/exp-001/tests/profiler/fixtures/valid-summary.json \

@@ -22,30 +22,37 @@ class Exp001ProfilingProfileTest {
                     WebMvcAutoConfiguration.class
             ))
             .withUserConfiguration(ControllerConfiguration.class)
-            .withBean(Exp001ProfilingService.class, () -> mock(Exp001ProfilingService.class));
+            .withBean(Exp001ProfilingService.class, () -> mock(Exp001ProfilingService.class))
+            .withBean(Exp001SmokeWorkloadService.class, () -> mock(Exp001SmokeWorkloadService.class));
 
     @Test
     void defaultProfileDoesNotRegisterProfilingEndpoint() {
         contextRunner.run(context ->
-                assertThat(context).doesNotHaveBean(Exp001ProfilingController.class)
+                assertThat(context)
+                        .doesNotHaveBean(Exp001ProfilingController.class)
+                        .doesNotHaveBean(Exp001SmokeController.class)
         );
     }
 
     @Test
-    void exp001ProfileRegistersProfilingEndpoints() {
+    void exp001ProfileRegistersProfilingAndSmokeEndpoints() {
         contextRunner
                 .withPropertyValues("spring.profiles.active=exp001")
                 .run(context -> {
                     assertThat(context).hasSingleBean(Exp001ProfilingController.class);
+                    assertThat(context).hasSingleBean(Exp001SmokeController.class);
                     RequestMappingHandlerMapping mapping = context.getBean(RequestMappingHandlerMapping.class);
                     assertThat(mapping.getHandlerMethods().keySet())
                             .anySatisfy(info -> assertThat(info.toString()).contains("/internal/exp-001/jpa"))
-                            .anySatisfy(info -> assertThat(info.toString()).contains("/internal/exp-001/jdbc"));
+                            .anySatisfy(info -> assertThat(info.toString()).contains("/internal/exp-001/jdbc"))
+                            .anySatisfy(info -> assertThat(info.toString()).contains("/internal/exp-001/smoke/ready"))
+                            .anySatisfy(info -> assertThat(info.toString()).contains("/internal/exp-001/smoke/cpu"))
+                            .anySatisfy(info -> assertThat(info.toString()).contains("/internal/exp-001/smoke/allocation"));
                 });
     }
 
     @Configuration
-    @Import(Exp001ProfilingController.class)
+    @Import({Exp001ProfilingController.class, Exp001SmokeController.class})
     static class ControllerConfiguration {
     }
 }
