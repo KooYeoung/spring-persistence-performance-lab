@@ -30,6 +30,8 @@ $TrackedRoot = Join-Path $ProjectRoot 'results\exp-001\profiling'
 $ExpectedRuntime = 'docker-linux-x64'
 $ExpectedArchitecture = 'linux-x64'
 $ExpectedJdkVersion = 'amazoncorretto:21.0.11-al2023'
+$EngineVerificationPerfEvents = 'jfr-active-setting-engine:perf_events'
+$EngineVerificationCtimer = 'jfr-active-setting-engine:ctimer'
 $AsyncProfilerLockKeys = @(
     'version',
     'tag',
@@ -414,6 +416,24 @@ function Assert-ProfileConfig {
     if ($config.rowsPerInvocation -ne 50000) {
         Stop-Profile "rowsPerInvocation은 50000이어야 합니다: $($config.rowsPerInvocation)"
     }
+    if ($config.smoke.smokeProtocolVersion -ne 'exp001-smoke-v1') {
+        Stop-Profile "Invalid smoke protocol version: $($config.smoke.smokeProtocolVersion)"
+    }
+    if ([int] $config.smoke.responseMaxBytes -ne 4096) {
+        Stop-Profile "Invalid smoke response size limit: $($config.smoke.responseMaxBytes)"
+    }
+    if ($config.smoke.cpuWorkload.version -ne 'cpu-v1' -or [int] $config.smoke.cpuWorkload.successLowerBoundMillis -ne 2500) {
+        Stop-Profile 'Invalid CPU smoke workload config.'
+    }
+    if ([int] $config.smoke.cpuWorkload.minimumSamples -ne 50 -or [int] $config.smoke.cpuWorkload.recommendedSamples -lt [int] $config.smoke.cpuWorkload.minimumSamples) {
+        Stop-Profile 'Invalid CPU smoke sample thresholds.'
+    }
+    if ($config.smoke.allocationWorkload.version -ne 'allocation-v1' -or [int64] $config.smoke.allocationWorkload.allocatedBytes -ne 67108864) {
+        Stop-Profile 'Invalid allocation smoke workload config.'
+    }
+    if ([int64] $config.smoke.allocationWorkload.minimumSampledBytes -ne 4194304 -or [int64] $config.smoke.allocationWorkload.recommendedSampledBytes -lt [int64] $config.smoke.allocationWorkload.minimumSampledBytes) {
+        Stop-Profile 'Invalid allocation smoke byte thresholds.'
+    }
 
     $profileIds = @($config.profileOrder)
     if ($profileIds.Count -ne 4) {
@@ -558,6 +578,98 @@ function Invoke-ComposeCapture {
     return $output
 }
 
+function Invoke-ComposeDownForCleanup {
+    $composeArgs = @()
+    foreach ($file in Get-ComposeFiles) {
+        $composeArgs += @('-f', $file)
+    }
+    $composeArgs += @('-p', $ComposeProject, 'down', '-v', '--remove-orphans')
+
+    & docker compose @composeArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw 'docker compose down cleanup failed.'
+    }
+}
+
+function Assert-ProfilerComposeResourcesCleaned {
+    $filter = "label=com.docker.compose.project=$ComposeProject"
+    $containers = @(& docker ps -a -q --filter $filter | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($LASTEXITCODE -ne 0) {
+        throw 'docker container residual check failed.'
+    }
+    $networks = @(& docker network ls -q --filter $filter | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($LASTEXITCODE -ne 0) {
+        throw 'docker network residual check failed.'
+    }
+    $volumes = @(& docker volume ls -q --filter $filter | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($LASTEXITCODE -ne 0) {
+        throw 'docker volume residual check failed.'
+    }
+    if ($containers.Count -ne 0 -or $networks.Count -ne 0 -or $volumes.Count -ne 0) {
+        throw "Residual Docker resources remain: containers=$($containers.Count) networks=$($networks.Count) volumes=$($volumes.Count)"
+    }
+}
+
+function Assert-ProfilerCleanupPath {
+    param(
+        [string] $Path,
+        [string] $Root
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $rootPrefix = $fullRoot + [System.IO.Path]::DirectorySeparatorChar
+    if ($fullPath -ne $fullRoot -and -not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "cleanup path escapes root: $Path"
+    }
+}
+
+function Clear-ProfilerPartialArtifacts {
+    if (Test-Path -LiteralPath $StateDir) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $StateDir -File -Filter 'smoke-ready.json.tmp.*' -ErrorAction SilentlyContinue)) {
+            Assert-ProfilerCleanupPath -Path $file.FullName -Root $StateDir
+            Remove-Item -LiteralPath $file.FullName -Force
+        }
+    }
+    if (Test-Path -LiteralPath $RawRoot) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $RawRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -like '*.tmp.*' -or $_.Name -like '.tmp.*' -or $_.Name -like '*.partial'
+        })) {
+            Assert-ProfilerCleanupPath -Path $file.FullName -Root $RawRoot
+            Remove-Item -LiteralPath $file.FullName -Force
+        }
+    }
+}
+
+function Invoke-ProfilerCleanup {
+    param([string] $FailureCode = 'SMOKE_CLEANUP_FAILED')
+
+    $errors = New-Object System.Collections.Generic.List[string]
+    try {
+        Invoke-ComposeDownForCleanup
+    } catch {
+        $errors.Add($_.Exception.Message)
+    }
+    try {
+        Assert-ProfilerComposeResourcesCleaned
+    } catch {
+        $errors.Add($_.Exception.Message)
+    }
+    try {
+        Clear-ProfilerPartialArtifacts
+    } catch {
+        $errors.Add($_.Exception.Message)
+    }
+    if ($errors.Count -ne 0) {
+        throw "$FailureCode`: $($errors -join '; ')"
+    }
+}
+
+function Invoke-Cleanup {
+    Invoke-ProfilerCleanup -FailureCode 'TOOL_CLEANUP_FAILED'
+    Write-ProfileLog 'profiler cleanup completed.'
+}
+
 function Assert-DockerReady {
     Require-DockerCompose
     Assert-AsyncProfilerInstalled | Out-Null
@@ -607,8 +719,9 @@ function Get-HarnessRevision {
 
 function Get-SmokeContext {
     $lock = Read-AsyncProfilerLock
+    $config = Read-ProfileConfig
     return [ordered] @{
-        markerFormatVersion = 1
+        markerFormatVersion = 2
         sourceRevision = Get-SourceRevision
         harnessRevision = Get-HarnessRevision
         profilerVersion = [string] $lock['version']
@@ -617,6 +730,9 @@ function Get-SmokeContext {
         runtime = $ExpectedRuntime
         architecture = $ExpectedArchitecture
         jdkVersion = $ExpectedJdkVersion
+        smokeProtocolVersion = [string] $config.smoke.smokeProtocolVersion
+        cpuWorkloadVersion = [string] $config.smoke.cpuWorkload.version
+        allocationWorkloadVersion = [string] $config.smoke.allocationWorkload.version
     }
 }
 
@@ -646,12 +762,54 @@ function Read-SmokeResult {
         Stop-Profile "Smoke result file is missing: $SmokeResultPath"
     }
     $result = Get-Content -LiteralPath $SmokeResultPath -Encoding UTF8 -Raw | ConvertFrom-Json
-    Assert-JsonExactKeys -Object $result -Keys @('smokeSuccess', 'selectedCpuEngine', 'events') -Name 'container smoke result'
+    Assert-JsonExactKeys -Object $result -Keys @(
+        'markerFormatVersion',
+        'smokeSuccess',
+        'selectedCpuEngine',
+        'smokeProtocolVersion',
+        'cpuWorkloadVersion',
+        'allocationWorkloadVersion',
+        'cpuSampleCount',
+        'allocationSampleCount',
+        'allocationSampledBytes',
+        'engineVerification'
+    ) -Name 'container smoke result'
+    if ([int] $result.markerFormatVersion -ne 2) {
+        Stop-Profile "Container smoke result markerFormatVersion is invalid: $($result.markerFormatVersion)"
+    }
     if ($result.smokeSuccess -ne $true) {
         Stop-Profile 'Container smoke result is not successful.'
     }
     if (@('cpu', 'ctimer') -notcontains [string] $result.selectedCpuEngine) {
         Stop-Profile "Invalid selected CPU engine in smoke result: $($result.selectedCpuEngine)"
+    }
+    $config = Read-ProfileConfig
+    if ([string] $result.smokeProtocolVersion -ne [string] $config.smoke.smokeProtocolVersion) {
+        Stop-Profile 'Container smoke protocol version mismatch.'
+    }
+    if ([string] $result.cpuWorkloadVersion -ne [string] $config.smoke.cpuWorkload.version) {
+        Stop-Profile 'Container CPU smoke workload version mismatch.'
+    }
+    if ([string] $result.allocationWorkloadVersion -ne [string] $config.smoke.allocationWorkload.version) {
+        Stop-Profile 'Container allocation smoke workload version mismatch.'
+    }
+    $cpuSampleCount = 0L
+    $allocationSampleCount = 0L
+    $allocationSampledBytes = 0L
+    if (-not [int64]::TryParse([string] $result.cpuSampleCount, [ref] $cpuSampleCount) -or $cpuSampleCount -lt [int64] $config.smoke.cpuWorkload.minimumSamples) {
+        Stop-Profile "Container CPU smoke sample count is below threshold: $($result.cpuSampleCount)"
+    }
+    if (-not [int64]::TryParse([string] $result.allocationSampleCount, [ref] $allocationSampleCount) -or $allocationSampleCount -lt [int64] $config.smoke.allocationWorkload.minimumSamples) {
+        Stop-Profile "Container allocation smoke sample count is below threshold: $($result.allocationSampleCount)"
+    }
+    if (-not [int64]::TryParse([string] $result.allocationSampledBytes, [ref] $allocationSampledBytes) -or $allocationSampledBytes -lt [int64] $config.smoke.allocationWorkload.minimumSampledBytes) {
+        Stop-Profile "Container allocation smoke sampled bytes are below threshold: $($result.allocationSampledBytes)"
+    }
+    if ([string] $result.selectedCpuEngine -eq 'cpu' -and [string] $result.engineVerification -ne $EngineVerificationPerfEvents) {
+        Stop-Profile "selectedCpuEngine=cpu requires engineVerification=$EngineVerificationPerfEvents."
+    }
+    if ([string] $result.selectedCpuEngine -eq 'ctimer' -and [string] $result.engineVerification -ne $EngineVerificationCtimer) {
+        Stop-Profile "selectedCpuEngine=ctimer requires engineVerification=$EngineVerificationCtimer."
     }
     return $result
 }
@@ -659,9 +817,10 @@ function Read-SmokeResult {
 function Write-SmokeMarker {
     param(
         [object] $Context,
-        [string] $SelectedCpuEngine
+        [object] $SmokeResult
     )
 
+    $SelectedCpuEngine = [string] $SmokeResult.selectedCpuEngine
     if (@('cpu', 'ctimer') -notcontains $SelectedCpuEngine) {
         Stop-Profile "Invalid selected CPU engine: $SelectedCpuEngine"
     }
@@ -670,6 +829,9 @@ function Write-SmokeMarker {
     }
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     $temp = "$SmokeStateFile.tmp.$PID"
+    if (Test-Path -LiteralPath $temp) {
+        Stop-Profile "Smoke marker temporary file already exists: $temp"
+    }
     $state = [ordered] @{
         markerFormatVersion = $Context['markerFormatVersion']
         sourceRevision = $Context['sourceRevision']
@@ -681,10 +843,39 @@ function Write-SmokeMarker {
         runtime = $Context['runtime']
         architecture = $Context['architecture']
         jdkVersion = $Context['jdkVersion']
+        smokeProtocolVersion = $Context['smokeProtocolVersion']
+        cpuWorkloadVersion = $Context['cpuWorkloadVersion']
+        allocationWorkloadVersion = $Context['allocationWorkloadVersion']
+        cpuSampleCount = [int64] $SmokeResult.cpuSampleCount
+        allocationSampleCount = [int64] $SmokeResult.allocationSampleCount
+        allocationSampledBytes = [int64] $SmokeResult.allocationSampledBytes
+        engineVerification = [string] $SmokeResult.engineVerification
         smokeSuccess = $true
         createdAtUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     }
     [System.IO.File]::WriteAllText($temp, (($state | ConvertTo-Json -Depth 4) + "`n"), $Script:Utf8NoBom)
+    $tempState = Get-Content -LiteralPath $temp -Encoding UTF8 -Raw | ConvertFrom-Json
+    Assert-JsonExactKeys -Object $tempState -Keys @(
+        'markerFormatVersion',
+        'sourceRevision',
+        'harnessRevision',
+        'profilerVersion',
+        'profilerAssetSha256',
+        'securityLevel',
+        'selectedCpuEngine',
+        'runtime',
+        'architecture',
+        'jdkVersion',
+        'smokeProtocolVersion',
+        'cpuWorkloadVersion',
+        'allocationWorkloadVersion',
+        'cpuSampleCount',
+        'allocationSampleCount',
+        'allocationSampledBytes',
+        'engineVerification',
+        'smokeSuccess',
+        'createdAtUtc'
+    ) -Name 'smoke marker candidate'
     Move-Item -LiteralPath $temp -Destination $SmokeStateFile
 }
 
@@ -705,7 +896,7 @@ function Invoke-Smoke {
     Invoke-Compose -Arguments @('exec', '-T', '-e', "EXP001_SMOKE_ID=$smokeId", 'app', '/opt/exp001/exp001-profile.sh', 'smoke')
 
     $smokeResult = Read-SmokeResult -SmokeResultPath $smokeResultPath
-    Write-SmokeMarker -Context $context -SelectedCpuEngine ([string] $smokeResult.selectedCpuEngine)
+    Write-SmokeMarker -Context $context -SmokeResult $smokeResult
     Write-ProfileLog "smoke 통과 상태를 기록했습니다: $SmokeStateFile"
 }
 
@@ -738,6 +929,13 @@ function Assert-SmokeReady {
         'runtime',
         'architecture',
         'jdkVersion',
+        'smokeProtocolVersion',
+        'cpuWorkloadVersion',
+        'allocationWorkloadVersion',
+        'cpuSampleCount',
+        'allocationSampleCount',
+        'allocationSampledBytes',
+        'engineVerification',
         'smokeSuccess',
         'createdAtUtc'
     ) -Name 'smoke marker'
@@ -752,7 +950,10 @@ function Assert-SmokeReady {
         'securityLevel',
         'runtime',
         'architecture',
-        'jdkVersion'
+        'jdkVersion',
+        'smokeProtocolVersion',
+        'cpuWorkloadVersion',
+        'allocationWorkloadVersion'
     )) {
         if ([string] $state.$key -ne [string] $context[$key]) {
             Stop-Profile "Smoke marker mismatch for $key."
@@ -764,10 +965,102 @@ function Assert-SmokeReady {
     if (@('cpu', 'ctimer') -notcontains [string] $state.selectedCpuEngine) {
         Stop-Profile "Smoke marker selectedCpuEngine is invalid: $($state.selectedCpuEngine)"
     }
+    $config = Read-ProfileConfig
+    if ([int64] $state.cpuSampleCount -lt [int64] $config.smoke.cpuWorkload.minimumSamples) {
+        Stop-Profile "Smoke marker CPU sample count is below threshold: $($state.cpuSampleCount)"
+    }
+    if ([int64] $state.allocationSampleCount -lt [int64] $config.smoke.allocationWorkload.minimumSamples) {
+        Stop-Profile "Smoke marker allocation sample count is below threshold: $($state.allocationSampleCount)"
+    }
+    if ([int64] $state.allocationSampledBytes -lt [int64] $config.smoke.allocationWorkload.minimumSampledBytes) {
+        Stop-Profile "Smoke marker allocation sampled bytes are below threshold: $($state.allocationSampledBytes)"
+    }
+    if ([string] $state.selectedCpuEngine -eq 'cpu' -and [string] $state.engineVerification -ne $EngineVerificationPerfEvents) {
+        Stop-Profile "Smoke marker selectedCpuEngine=cpu requires engineVerification=$EngineVerificationPerfEvents."
+    }
+    if ([string] $state.selectedCpuEngine -eq 'ctimer' -and [string] $state.engineVerification -ne $EngineVerificationCtimer) {
+        Stop-Profile "Smoke marker selectedCpuEngine=ctimer requires engineVerification=$EngineVerificationCtimer."
+    }
     if ($state.createdAtUtc -notmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') {
         Stop-Profile "Smoke marker createdAtUtc is invalid: $($state.createdAtUtc)"
     }
     return $state
+}
+
+function Invoke-Smoke {
+    $oldImportOnly = $env:EXP001_PROFILE_IMPORT_ONLY
+    $failureMessage = ''
+    $cleanupFailure = ''
+    $context = $null
+    $smokeResult = $null
+
+    try {
+        $env:EXP001_PROFILE_IMPORT_ONLY = '1'
+        try {
+            Assert-ProfilerHarness
+            Assert-DockerReady
+            New-Item -ItemType Directory -Force -Path $RawRoot, $StateDir | Out-Null
+            $context = Get-SmokeContext
+            if (Test-Path -LiteralPath $SmokeStateFile) {
+                Stop-Profile "Smoke marker already exists and will not be overwritten: $SmokeStateFile"
+            }
+            Invoke-ProfilerCleanup -FailureCode 'SMOKE_CLEANUP_FAILED'
+
+            $smokeId = 'smoke-' + [DateTime]::UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'")
+            $smokeResultPath = Join-Path $RawRoot "$smokeId\raw\smoke\smoke-ready.json"
+
+            Write-ProfileLog "Docker profile runtime을 시작합니다. security level: $SecurityLevel"
+            Invoke-Compose -Arguments @('up', '-d', '--build', 'postgres', 'app')
+            Invoke-Compose -Arguments @('exec', '-T', 'app', '/opt/exp001/exp001-profile.sh', 'require-tool')
+            Invoke-Compose -Arguments @('exec', '-T', '-e', "EXP001_SMOKE_ID=$smokeId", 'app', '/opt/exp001/exp001-profile.sh', 'smoke')
+
+            $smokeResult = Read-SmokeResult -SmokeResultPath $smokeResultPath
+        } catch {
+            $failureMessage = $_.Exception.Message
+        } finally {
+            try {
+                Invoke-ProfilerCleanup -FailureCode 'SMOKE_CLEANUP_FAILED'
+            } catch {
+                $cleanupFailure = $_.Exception.Message
+            }
+        }
+    } finally {
+        $env:EXP001_PROFILE_IMPORT_ONLY = $oldImportOnly
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($cleanupFailure)) {
+        if (-not [string]::IsNullOrWhiteSpace($failureMessage)) {
+            Stop-Profile "$cleanupFailure; original failure: $failureMessage"
+        }
+        Stop-Profile $cleanupFailure
+    }
+    if (-not [string]::IsNullOrWhiteSpace($failureMessage)) {
+        Stop-Profile $failureMessage
+    }
+    if ($null -eq $context -or $null -eq $smokeResult) {
+        Stop-Profile 'Smoke transaction did not produce a marker candidate.'
+    }
+
+    Write-SmokeMarker -Context $context -SmokeResult $smokeResult
+    Write-ProfileLog "smoke 통과 상태를 기록했습니다: $SmokeStateFile"
+}
+
+function Show-Help {
+    Write-Host 'EXP-001 async-profiler Windows harness'
+    Write-Host ''
+    Write-Host '사용법:'
+    Write-Host '  powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\exp-001\profiler\windows\exp001-profile.ps1 <action>'
+    Write-Host ''
+    Write-Host 'Actions:'
+    Write-Host '  verify       lock/config/Docker policy/official result guard를 검증한다.'
+    Write-Host '  prepare-tool mounted Linux async-profiler tool을 lock 기준으로 준비한다. 다운로드는 -AllowDownload가 필요하다.'
+    Write-Host '  smoke        Docker app JVM에 DB-free CPU/allocation smoke workload를 attach한다.'
+    Write-Host '  cleanup      Docker profiler project resource와 partial artifact를 정리한다.'
+    Write-Host '  profile      smoke 통과 후 실제 Phase B profile을 실행한다. -AllowActualProfile이 필요하다.'
+    Write-Host '  validate     results/exp-001/profiling/<profile-run-id>/summary.json을 schema gate로 검증한다.'
+    Write-Host '  help         이 도움말을 출력한다.'
+    Write-Host ''
+    Write-Host 'SecurityLevel: 0 기본 seccomp, 1 seccomp=unconfined, 2 seccomp=unconfined + SYS_ADMIN'
 }
 
 function New-ProfileRunId {
@@ -995,6 +1288,7 @@ try {
         'verify' { Assert-ProfilerHarness }
         'prepare-tool' { Install-AsyncProfilerTool }
         'smoke' { Invoke-Smoke }
+        'cleanup' { Invoke-Cleanup }
         'profile' { Invoke-Profile }
         'validate' { Invoke-ValidatePublication }
         'help' { Show-Help }
