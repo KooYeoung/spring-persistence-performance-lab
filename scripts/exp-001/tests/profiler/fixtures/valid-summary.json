@@ -1,0 +1,263 @@
+{
+  "profileFormatVersion": 1,
+  "experiment": "EXP-001",
+  "phase": "Phase B async-profiler evidence",
+  "profileRunId": "20260728T010203Z-213a6362f778",
+  "sourceRevision": "213a6362f7789a93484d9aa49d3e7e93ded93876",
+  "harnessRevision": "213a6362f7789a93484d9aa49d3e7e93ded93876",
+  "runtime": {
+    "primaryRuntime": "docker-linux-x64",
+    "securityLevel": 0,
+    "nativeWindowsSupported": false
+  },
+  "profiler": {
+    "name": "async-profiler",
+    "version": "4.5",
+    "platform": "linux-x64",
+    "assetSha256": "89546fbb9ee0fc5496c7edd4099b0709489bc78b0d8057ccbb4b801f6b032b62"
+  },
+  "profiles": [
+    {
+      "event": "cpu",
+      "cpuEngine": "cpu",
+      "strategy": "jpa",
+      "interval": "10ms",
+      "repetitions": 1,
+      "totalRows": 50000,
+      "chunkCount": 1,
+      "validChunkCount": 1,
+      "sampleCount": 350,
+      "sampledValue": 350,
+      "normalizationUnit": "samples",
+      "topPackages": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jpa",
+          "value": 300
+        }
+      ],
+      "topClasses": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService",
+          "value": 300
+        }
+      ],
+      "topMethods": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll",
+          "value": 300
+        }
+      ],
+      "topStacks": [
+        {
+          "stack": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll;org.hibernate.Session.persist",
+          "value": 300
+        }
+      ],
+      "workloadGate": {
+        "valid": true,
+        "inputCount": 50000,
+        "savedCount": 50000,
+        "rowCount": 50000
+      },
+      "artifactManifest": [
+        {
+          "fileName": "001-jpa-cpu.jfr",
+          "size": 1234,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "event": "cpu",
+          "strategy": "jpa",
+          "chunkCount": 1
+        }
+      ],
+      "sampleThreshold": {
+        "hardMinimum": 300,
+        "recommendedMinimum": 1000,
+        "status": "hard-pass"
+      },
+      "success": true
+    },
+    {
+      "event": "cpu",
+      "cpuEngine": "cpu",
+      "strategy": "jdbc",
+      "interval": "10ms",
+      "repetitions": 25,
+      "totalRows": 1250000,
+      "chunkCount": 25,
+      "validChunkCount": 25,
+      "sampleCount": 1200,
+      "sampledValue": 1200,
+      "normalizationUnit": "samples",
+      "topPackages": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jdbc",
+          "value": 900
+        }
+      ],
+      "topClasses": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService",
+          "value": 900
+        }
+      ],
+      "topMethods": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll",
+          "value": 900
+        }
+      ],
+      "topStacks": [
+        {
+          "stack": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll;org.postgresql.core.v3.QueryExecutorImpl.execute",
+          "value": 900
+        }
+      ],
+      "workloadGate": {
+        "valid": true,
+        "inputCount": 50000,
+        "savedCount": 50000,
+        "rowCount": 50000
+      },
+      "artifactManifest": [
+        {
+          "fileName": "001-jdbc-cpu.jfr",
+          "size": 1234,
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "event": "cpu",
+          "strategy": "jdbc",
+          "chunkCount": 25
+        }
+      ],
+      "sampleThreshold": {
+        "hardMinimum": 300,
+        "recommendedMinimum": 1000,
+        "status": "recommended-pass"
+      },
+      "success": true
+    },
+    {
+      "event": "alloc",
+      "cpuEngine": null,
+      "strategy": "jdbc",
+      "interval": "512k",
+      "repetitions": 5,
+      "totalRows": 250000,
+      "chunkCount": 5,
+      "validChunkCount": 5,
+      "sampleCount": 125,
+      "sampledValue": 65536000,
+      "normalizationUnit": "bytes",
+      "topPackages": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jdbc",
+          "value": 32768000
+        }
+      ],
+      "topClasses": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService",
+          "value": 32768000
+        }
+      ],
+      "topMethods": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll",
+          "value": 32768000
+        }
+      ],
+      "topStacks": [
+        {
+          "stack": "com.example.persistencebenchmark.persistence.jdbc.JdbcBatchBenchmarkRecordPersistenceService.saveAll;java.lang.StringLatin1.newString",
+          "value": 32768000
+        }
+      ],
+      "workloadGate": {
+        "valid": true,
+        "inputCount": 50000,
+        "savedCount": 50000,
+        "rowCount": 50000
+      },
+      "artifactManifest": [
+        {
+          "fileName": "001-jdbc-alloc.jfr",
+          "size": 1234,
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "event": "alloc",
+          "strategy": "jdbc",
+          "chunkCount": 5
+        }
+      ],
+      "sampleThreshold": {
+        "hardMinimum": 100,
+        "recommendedMinimum": 200,
+        "status": "hard-pass"
+      },
+      "success": true
+    },
+    {
+      "event": "alloc",
+      "cpuEngine": null,
+      "strategy": "jpa",
+      "interval": "512k",
+      "repetitions": 1,
+      "totalRows": 50000,
+      "chunkCount": 1,
+      "validChunkCount": 1,
+      "sampleCount": 110,
+      "sampledValue": 57671680,
+      "normalizationUnit": "bytes",
+      "topPackages": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jpa",
+          "value": 28835840
+        }
+      ],
+      "topClasses": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService",
+          "value": 28835840
+        }
+      ],
+      "topMethods": [
+        {
+          "name": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll",
+          "value": 28835840
+        }
+      ],
+      "topStacks": [
+        {
+          "stack": "com.example.persistencebenchmark.persistence.jpa.JpaBenchmarkRecordPersistenceService.saveAll;org.hibernate.event.internal.AbstractSaveEventListener.performSave",
+          "value": 28835840
+        }
+      ],
+      "workloadGate": {
+        "valid": true,
+        "inputCount": 50000,
+        "savedCount": 50000,
+        "rowCount": 50000
+      },
+      "artifactManifest": [
+        {
+          "fileName": "001-jpa-alloc.jfr",
+          "size": 1234,
+          "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "event": "alloc",
+          "strategy": "jpa",
+          "chunkCount": 1
+        }
+      ],
+      "sampleThreshold": {
+        "hardMinimum": 100,
+        "recommendedMinimum": 200,
+        "status": "hard-pass"
+      },
+      "success": true
+    }
+  ],
+  "crossProfileValidation": {
+    "cpuEngineConsistent": true,
+    "strategyChunkCountsValid": true,
+    "workloadGatesValid": true
+  },
+  "success": true
+}

@@ -1,9 +1,10 @@
 # EXP-001: JPA saveAll vs JDBC Batch
 
-상태: 공개 재현 프로토콜. 공식 결과 1회 생성 완료.
+상태: 공개 재현 프로토콜. 공식 결과 1회 생성 완료. Phase B async-profiler evidence harness는 별도 protocol로 분리한다.
 
 - historical baseline: `private audit`
 - related evidence: `EVD-001`
+- profiler protocol: `docs/experiments/EXP-001-async-profiler.md`
 - public reproduction: `20260727T053643Z-2d76b26`
 - public reproduction result: `results/exp-001/20260727T053643Z-2d76b26`
 - public reproduction source revision: `2d76b26e716a5f1e471f225afe66128ebc948b26`
@@ -416,6 +417,8 @@ Official timing run 중에는 CPU profiling, sampled allocation profiling, JFR, 
 async-profiler 작업이 나중에 필요하면 외부 profiling subphase로 분리하고 별도 결과로 남긴다. Profiler output은 official timing representative data로 사용하지 않는다.
 
 Profiler HTML, raw stack traces, JFR files, heap dumps, large logs, DB dumps는 commit하지 않는다.
+
+Phase B async-profiler evidence는 `docs/experiments/EXP-001-async-profiler.md`가 소유한다. Phase B는 CPU/allocation 원인 후보 분석이며 이 문서의 Phase A official elapsed result를 갱신하거나 대체하지 않는다. Phase B의 raw artifact는 `artifacts/exp-001/profiling/<profile-run-id>/`에 두고, `results/exp-001/profiling/<profile-run-id>/`에는 sanitized `metadata.md`, `summary.json`, `analysis.md`, `manifest.md`만 둘 수 있다.
 
 ## 결과 구조(Result Structure)
 

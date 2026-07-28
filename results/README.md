@@ -16,6 +16,15 @@ EXP-001 layout:
 - `results/exp-001/<run-id>/official/*.json`
 - `results/exp-001/<run-id>/summary.md`
 
+EXP-001 profiler Phase B publication layout:
+
+- `results/exp-001/profiling/<profile-run-id>/metadata.md`
+- `results/exp-001/profiling/<profile-run-id>/summary.json`
+- `results/exp-001/profiling/<profile-run-id>/analysis.md`
+- `results/exp-001/profiling/<profile-run-id>/manifest.md`
+
+Profiler Phase B tracked publication에는 sanitized allowlist 4개 파일만 둔다. Raw JFR, HTML, collapsed stack, raw response, profiler stderr/log, heap dump, DB dump, binary/archive, temp/partial file은 `artifacts/exp-001/profiling/<profile-run-id>/`에만 둘 수 있으며 Git에 포함하지 않는다. `summary.json`은 exact schema와 sensitive key/value rejection을 통과해야 한다.
+
 현재 official public reproduction은 `results/exp-001/20260727T053643Z-2d76b26`에 보존한다. 이 directory의 legacy JSON, `summary.md`, `metadata.md`는 새 formatter나 summary 정책 검증 과정에서 rewrite하지 않는다.
 
 Run ID는 Windows와 macOS harness 모두 UTC timestamp와 short public Git SHA만 사용한다. Run ID에는 user name, user absolute path, host-local secret, private identifier를 포함하지 않는다.

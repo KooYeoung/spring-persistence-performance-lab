@@ -1,0 +1,141 @@
+{
+  "profileConfigVersion": 1,
+  "experiment": "EXP-001",
+  "phase": "Phase B async-profiler evidence",
+  "rowsPerInvocation": 50000,
+  "profileFormatVersion": 1,
+  "runtime": {
+    "primaryRuntime": "docker-linux-x64",
+    "nativeWindowsSupported": false,
+    "applicationService": "app",
+    "databaseService": "postgres",
+    "jvmAndProfilerUser": "app",
+    "dockerSecurityLevels": [
+      {
+        "level": 0,
+        "composeFiles": [
+          "compose.yml"
+        ],
+        "securityOpt": [],
+        "capAdd": []
+      },
+      {
+        "level": 1,
+        "composeFiles": [
+          "compose.yml",
+          "compose.seccomp.yml"
+        ],
+        "securityOpt": [
+          "seccomp=unconfined"
+        ],
+        "capAdd": []
+      },
+      {
+        "level": 2,
+        "composeFiles": [
+          "compose.yml",
+          "compose.sys-admin.yml"
+        ],
+        "securityOpt": [
+          "seccomp=unconfined"
+        ],
+        "capAdd": [
+          "SYS_ADMIN"
+        ]
+      }
+    ]
+  },
+  "profiler": {
+    "version": "4.5",
+    "tag": "v4.5",
+    "platform": "linux-x64",
+    "preferredCpuEngine": "cpu",
+    "cpuFallbackEngine": "ctimer",
+    "cpuInterval": "10ms",
+    "allocationEvent": "alloc",
+    "allocationInterval": "512k",
+    "allocationOption": "--alloc",
+    "allocationOptionValue": "512k"
+  },
+  "warmup": {
+    "profilerEnabled": false,
+    "jpaRepetitions": 1,
+    "jdbcRepetitions": 5
+  },
+  "profileOrder": [
+    "cpu-jpa",
+    "cpu-jdbc",
+    "alloc-jdbc",
+    "alloc-jpa"
+  ],
+  "profiles": [
+    {
+      "id": "cpu-jpa",
+      "event": "cpu",
+      "strategy": "jpa",
+      "interval": "10ms",
+      "repetitions": 1,
+      "minimumSamples": 300,
+      "recommendedSamples": 1000,
+      "normalizationUnit": "samples",
+      "converterMode": "cpu"
+    },
+    {
+      "id": "cpu-jdbc",
+      "event": "cpu",
+      "strategy": "jdbc",
+      "interval": "10ms",
+      "repetitions": 25,
+      "minimumSamples": 300,
+      "recommendedSamples": 1000,
+      "normalizationUnit": "samples",
+      "converterMode": "cpu"
+    },
+    {
+      "id": "alloc-jdbc",
+      "event": "alloc",
+      "strategy": "jdbc",
+      "interval": "512k",
+      "repetitions": 5,
+      "minimumSamples": 100,
+      "recommendedSamples": 200,
+      "normalizationUnit": "bytes",
+      "converterMode": "alloc"
+    },
+    {
+      "id": "alloc-jpa",
+      "event": "alloc",
+      "strategy": "jpa",
+      "interval": "512k",
+      "repetitions": 1,
+      "minimumSamples": 100,
+      "recommendedSamples": 200,
+      "normalizationUnit": "bytes",
+      "converterMode": "alloc"
+    }
+  ],
+  "targetFilters": {
+    "jpa": "com\\.example\\.persistencebenchmark\\.persistence\\.jpa\\.JpaBenchmarkRecordPersistenceService\\.saveAll",
+    "jdbc": "com\\.example\\.persistencebenchmark\\.persistence\\.jdbc\\.JdbcBatchBenchmarkRecordPersistenceService\\.saveAll"
+  },
+  "publication": {
+    "rawRoot": "artifacts/exp-001/profiling",
+    "trackedRoot": "results/exp-001/profiling",
+    "trackedAllowlist": [
+      "metadata.md",
+      "summary.json",
+      "analysis.md",
+      "manifest.md"
+    ],
+    "ignoredExtensions": [
+      ".jfr",
+      ".html",
+      ".collapsed",
+      ".log",
+      ".raw",
+      ".tmp",
+      ".hprof",
+      ".dump"
+    ]
+  }
+}

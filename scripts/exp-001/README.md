@@ -128,3 +128,17 @@ Windows Git Bash에서 Bash fixture runner를 실행할 때는 repository의 loc
 Fixture와 golden file은 `scripts/exp-001/tests/fixtures/*.json`, `scripts/exp-001/tests/expected/*.json`, `scripts/exp-001/tests/expected/*.md`에 있으며 Git attribute로 `text eol=lf`를 고정한다.
 
 Timeout 후에는 애플리케이션 내부 작업이 계속될 수 있다. 이 경우 자동 reset이나 부족한 step 보충을 하지 말고, 애플리케이션과 DB 상태를 확인한 뒤 새 run ID로 전체 official set을 다시 시작한다.
+
+## Async-profiler Phase B
+
+CPU/allocation 원인 분석용 harness는 `scripts/exp-001/profiler/`에 분리한다.
+
+Phase B profiler harness는 Phase A official timing result를 갱신하지 않는다. Actual 50,000-row profile execution은 smoke 통과 후 별도 명시 실행에서만 허용하며, raw JFR/HTML/collapsed/log는 Git에 포함하지 않는다.
+
+Profiler fixture는 다음 명령으로 별도 검증한다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/exp-001/tests/run-profiler-fixtures.ps1
+```
+
+Git Bash profiler fixture는 runner 자체가 계산한 immutable repository root를 사용해 실제 official result manifest 16개 파일의 SHA를 비교한다. Phase B profile은 smoke marker의 `selectedCpuEngine`과 revision/version binding이 현재 harness와 일치할 때만 허용한다.
