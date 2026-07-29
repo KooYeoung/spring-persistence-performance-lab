@@ -1,5 +1,7 @@
 * text=auto
 
+scripts/exp-001/profiler/container/exp001-profile.sh text eol=lf
+
 gradlew text eol=lf
 *.bat text eol=crlf
 *.jar binary
