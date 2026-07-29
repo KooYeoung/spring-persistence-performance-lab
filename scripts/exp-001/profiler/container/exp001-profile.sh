@@ -5,6 +5,7 @@ ASPROF_HOME="${EXP001_ASPROF_HOME:-/opt/async-profiler}"
 ASPROF_BIN="$ASPROF_HOME/bin/asprof"
 JFRCONV_BIN="$ASPROF_HOME/bin/jfrconv"
 ASPROF_LIB="$ASPROF_HOME/lib/libasyncProfiler.so"
+ASPROF_EXPECTED_VERSION="4.5"
 JFR_BIN="${EXP001_JFR_BIN:-jfr}"
 JAVA_BIN="${EXP001_JAVA_BIN:-java}"
 CURL_BIN="${EXP001_CURL_BIN:-curl}"
@@ -79,6 +80,50 @@ require_executable() {
   [[ -x "$file" ]] || die "Executable file is missing: $file"
 }
 
+file_has_hex_byte() {
+  local file="$1"
+  local byte="$2"
+  LC_ALL=C od -An -tx1 -v "$file" | grep -Eq "(^|[[:space:]])${byte}([[:space:]]|$)"
+}
+
+validate_asprof_version_stdout() {
+  local stdout_file="$1"
+  local expected_version="$2"
+  local line_feed_count
+  local stdout
+  local product
+  local product_lower
+  local version
+  local suffix
+
+  ! file_has_hex_byte "$stdout_file" 00 || return 1
+  ! file_has_hex_byte "$stdout_file" 1b || return 1
+
+  line_feed_count="$(LC_ALL=C tr -cd '\n' <"$stdout_file" | wc -c | tr -d '[:space:]')"
+  [[ "$line_feed_count" -le 1 ]] || return 1
+
+  stdout="$(cat "$stdout_file")"
+  stdout="${stdout%$'\r'}"
+  [[ "$stdout" != *$'\r'* ]] || return 1
+  [[ "$stdout" != *$'\n'* ]] || return 1
+
+  if [[ ! "$stdout" =~ ^[[:blank:]]*([^[:blank:]]+)[[:blank:]]+([0-9]+[.][0-9]+([.][0-9]+)?)([[:blank:]]+.*)?[[:blank:]]*$ ]]; then
+    return 1
+  fi
+
+  product="${BASH_REMATCH[1]}"
+  product_lower="${product,,}"
+  version="${BASH_REMATCH[2]}"
+  suffix="${BASH_REMATCH[4]:-}"
+
+  [[ "$product_lower" == "async-profiler" ]] || return 1
+  [[ "$version" == "$expected_version" ]] || return 1
+
+  if [[ -n "$suffix" && "$suffix" =~ (^|[^0-9.])([0-9]+[.][0-9]+([.][0-9]+)?)([^0-9.]|$) ]]; then
+    return 1
+  fi
+}
+
 require_tool() {
   require_executable "$ASPROF_BIN"
   require_executable "$JFRCONV_BIN"
@@ -86,11 +131,26 @@ require_tool() {
   command -v "$JFR_BIN" >/dev/null 2>&1 || die "JDK jfr tool is missing"
   command -v "$JAVA_BIN" >/dev/null 2>&1 || die "JDK java tool is missing"
 
-  local version
-  version="$("$ASPROF_BIN" --version 2>&1 || true)"
-  printf '%s\n' "$version" | grep -F 'async-profiler 4.5' >/dev/null \
-    || die "async-profiler version does not match the lock"
-  log "async-profiler 4.5 verified"
+  local stdout_file
+  local stderr_file
+  local asprof_exit
+  stdout_file="$(mktemp -t exp001-asprof-version-stdout.XXXXXX)"
+  stderr_file="$(mktemp -t exp001-asprof-version-stderr.XXXXXX)"
+
+  if "$ASPROF_BIN" --version >"$stdout_file" 2>"$stderr_file"; then
+    asprof_exit=0
+  else
+    asprof_exit=$?
+  fi
+
+  if [[ "$asprof_exit" -ne 0 ]] \
+    || ! validate_asprof_version_stdout "$stdout_file" "$ASPROF_EXPECTED_VERSION"; then
+    rm -f "$stdout_file" "$stderr_file"
+    die "async-profiler version does not match the lock"
+  fi
+
+  rm -f "$stdout_file" "$stderr_file"
+  log "async-profiler ${ASPROF_EXPECTED_VERSION} verified"
 }
 
 safe_name() {
