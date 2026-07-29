@@ -1,5 +1,7 @@
 FROM amazoncorretto:21.0.11-al2023 AS build
 
+RUN yum -y install findutils && command -v xargs >/dev/null && yum clean all
+
 WORKDIR /workspace
 COPY gradlew gradlew.bat settings.gradle build.gradle ./
 COPY gradle ./gradle
@@ -8,7 +10,7 @@ RUN ./gradlew --no-daemon --max-workers=1 bootJar
 
 FROM amazoncorretto:21.0.11-al2023
 
-RUN yum -y install shadow-utils curl tar gzip procps-ng findutils && yum clean all
+RUN yum -y install shadow-utils tar gzip procps-ng findutils && command -v curl >/dev/null && yum clean all
 
 RUN useradd --create-home --uid 10001 app
 WORKDIR /app
