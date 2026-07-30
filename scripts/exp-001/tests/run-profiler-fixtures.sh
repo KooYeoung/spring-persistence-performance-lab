@@ -32,6 +32,44 @@ assert_failure() {
   fi
 }
 
+assert_exit_code() {
+  local expected="$1"
+  shift
+  local actual
+  set +e
+  "$@" >/dev/null 2>&1
+  actual=$?
+  set -e
+  [[ "$actual" == "$expected" ]] || fail "expected exit $expected but got $actual: $*"
+}
+
+assert_exit_code_at_least() {
+  local minimum="$1"
+  shift
+  local actual
+  set +e
+  "$@" >/dev/null 2>&1
+  actual=$?
+  set -e
+  [[ "$actual" -ge "$minimum" ]] || fail "expected exit >= $minimum but got $actual: $*"
+}
+
+assert_failure_stderr_contains() {
+  local expected="$1"
+  shift
+  local stdout_file="$temp_root/assert-stdout.$$"
+  local stderr_file="$temp_root/assert-stderr.$$"
+  local actual
+  rm -f "$stdout_file" "$stderr_file"
+  set +e
+  "$@" >"$stdout_file" 2>"$stderr_file"
+  actual=$?
+  set -e
+  [[ "$actual" -ne 0 ]] || fail "expected failure containing '$expected': $*"
+  grep -F -- "$expected" "$stderr_file" >/dev/null \
+    || fail "expected stderr to contain '$expected': $*"
+}
+
 configure_jq_override_for_git_bash() {
   local kernel
   local override
@@ -428,8 +466,12 @@ set -Eeuo pipefail
 printf '%s\n' "$*" >>"${EXP001_FAKE_ASPROF_LOG:?}"
 case "${1:-}" in
   --version)
-    version_stdout="${EXP001_FAKE_ASPROF_VERSION_STDOUT-async-profiler 4.5\\n}"
-    printf '%b' "$version_stdout"
+    if [[ -n "${EXP001_FAKE_ASPROF_VERSION_STDOUT_FILE:-}" ]]; then
+      cat "$EXP001_FAKE_ASPROF_VERSION_STDOUT_FILE"
+    else
+      version_stdout="${EXP001_FAKE_ASPROF_VERSION_STDOUT-async-profiler 4.5\\n}"
+      printf '%b' "$version_stdout"
+    fi
     if [[ -n "${EXP001_FAKE_ASPROF_VERSION_STDERR+x}" ]]; then
       printf '%b' "$EXP001_FAKE_ASPROF_VERSION_STDERR" >&2
     fi
@@ -585,6 +627,33 @@ run_require_tool_fixture() {
     "$CONTAINER_RUNNER" require-tool >/dev/null 2>&1
 }
 
+assert_require_tool_stdout_file_failure_contains() {
+  local version_stdout_file="$1"
+  local expected="$2"
+  local stdout_file="$temp_root/require-tool-stdout.$$"
+  local stderr_file="$temp_root/require-tool-stderr.$$"
+  local actual
+  rm -f "$stdout_file" "$stderr_file"
+  set +e
+  env \
+    EXP001_ASPROF_HOME="$fake_tools" \
+    EXP001_JFR_BIN="$fake_tools/bin/jfr" \
+    EXP001_JAVA_BIN="$fake_tools/bin/java" \
+    EXP001_FAKE_ASPROF_LOG="$fake_asprof_log" \
+    EXP001_FAKE_ASPROF_VERSION_STDOUT_FILE="$version_stdout_file" \
+    EXP001_FAKE_ASPROF_VERSION_STDERR='' \
+    EXP001_FAKE_ASPROF_VERSION_EXIT=0 \
+    SPRING_PROFILES_ACTIVE=exp001 \
+    "$CONTAINER_RUNNER" require-tool >"$stdout_file" 2>"$stderr_file"
+  actual=$?
+  set -e
+  [[ "$actual" -ne 0 ]] || fail "expected require-tool failure for stdout file"
+  grep -F -- "$expected" "$stderr_file" >/dev/null \
+    || fail "expected require-tool stderr to contain '$expected'"
+  grep -F -- 'async-profiler version does not match the lock' "$stderr_file" >/dev/null \
+    || fail "expected require-tool lock mismatch error"
+}
+
 write_profiler_version_contract_fixture() {
   local name="$1"
   local lock_text="$2"
@@ -670,6 +739,23 @@ assert_profiler_version_contract_fixtures() {
     $'ASPROF_EXPECTED_VERSION=""\n'
 }
 
+LONG_VERSION_SUFFIX_BYTES=262144
+LONG_VERSION_TARGET_OFFSET=19
+
+write_long_version_payload() {
+  local output="$1"
+  local kind="$2"
+  printf 'Async-profiler 4.5 ' >"$output"
+  case "$kind" in
+    ansi) printf '\033' >>"$output" ;;
+    nul) printf '\000' >>"$output" ;;
+    clean) ;;
+    *) fail "unknown long version payload kind: $kind" ;;
+  esac
+  head -c "$LONG_VERSION_SUFFIX_BYTES" /dev/zero | tr '\0' 'A' >>"$output"
+  printf '\n' >>"$output"
+}
+
 JQ_BIN="$(require_jq)"
 EXP001_JQ_BIN_CACHE="$JQ_BIN"
 export EXP001_JQ_BIN_CACHE
@@ -700,6 +786,51 @@ assert_async_profiler_lock
 assert_profile_config
 assert_docker_policy
 assert_official_result_manifest
+
+long_ansi_payload="$temp_root/asprof-version-long-ansi.txt"
+long_nul_payload="$temp_root/asprof-version-long-nul.txt"
+long_clean_payload="$temp_root/asprof-version-long-clean.txt"
+nearby_token_payload="$temp_root/asprof-version-nearby-token.txt"
+missing_version_payload="$temp_root/asprof-version-missing.txt"
+write_long_version_payload "$long_ansi_payload" ansi
+write_long_version_payload "$long_nul_payload" nul
+write_long_version_payload "$long_clean_payload" clean
+printf 'Async-profiler 4.5 ' >"$nearby_token_payload"
+printf '\261\032\001' >>"$nearby_token_payload"
+head -c "$LONG_VERSION_SUFFIX_BYTES" /dev/zero | tr '\0' 'A' >>"$nearby_token_payload"
+printf '\n' >>"$nearby_token_payload"
+[[ "$(wc -c <"$long_ansi_payload" | tr -d ' ')" == "262165" ]] || fail "long ANSI payload size mismatch"
+[[ "$(wc -c <"$long_nul_payload" | tr -d ' ')" == "262165" ]] || fail "long NUL payload size mismatch"
+[[ "$(wc -c <"$long_clean_payload" | tr -d ' ')" == "262164" ]] || fail "long clean payload size mismatch"
+[[ "$(tr -cd '\033' <"$nearby_token_payload" | wc -c | tr -d ' ')" == "0" ]] \
+  || fail "nearby token payload contains ESC byte"
+[[ "$(printf 'Async-profiler 4.5 ' | wc -c | tr -d ' ')" == "$LONG_VERSION_TARGET_OFFSET" ]] \
+  || fail "long payload target offset mismatch"
+
+assert_exit_code 0 run_container_fixture '' '' fixture-file-has-hex-byte "$long_ansi_payload" 1b
+assert_exit_code 1 run_container_fixture '' '' fixture-file-has-hex-byte "$long_clean_payload" 1b
+assert_exit_code_at_least 2 run_container_fixture '' '' fixture-file-has-hex-byte "$missing_version_payload" 1b
+assert_exit_code 0 run_container_fixture '' '' fixture-file-has-hex-byte "$long_nul_payload" 00
+assert_exit_code_at_least 2 run_container_fixture '' '' fixture-file-has-hex-byte "$long_clean_payload" 1bg
+assert_exit_code 0 run_container_fixture '' '' fixture-file-has-hex-byte "$long_ansi_payload" 1B
+assert_exit_code 1 run_container_fixture '' '' fixture-file-has-hex-byte "$nearby_token_payload" 1b
+
+assert_failure_stderr_contains 'async-profiler version stdout contains forbidden ANSI byte' \
+  env SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-validate-asprof-version-stdout "$long_ansi_payload" 4.5
+assert_failure_stderr_contains 'async-profiler version stdout contains forbidden NUL byte' \
+  env SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-validate-asprof-version-stdout "$long_nul_payload" 4.5
+assert_failure_stderr_contains 'async-profiler version stdout NUL byte scan failed' \
+  env SPRING_PROFILES_ACTIVE=exp001 \
+  "$CONTAINER_RUNNER" fixture-validate-asprof-version-stdout "$missing_version_payload" 4.5
+
+assert_require_tool_stdout_file_failure_contains \
+  "$long_ansi_payload" \
+  'async-profiler version stdout contains forbidden ANSI byte'
+assert_require_tool_stdout_file_failure_contains \
+  "$long_nul_payload" \
+  'async-profiler version stdout contains forbidden NUL byte'
 
 assert_success run_require_tool_fixture $'Async-profiler 4.5 built on Jul 13 2026\n' '' 0
 assert_success run_require_tool_fixture $'async-profiler 4.5\n' '' 0

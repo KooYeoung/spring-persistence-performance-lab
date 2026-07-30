@@ -83,7 +83,52 @@ require_executable() {
 file_has_hex_byte() {
   local file="$1"
   local byte="$2"
-  LC_ALL=C od -An -tx1 -v "$file" | grep -Eq "(^|[[:space:]])${byte}([[:space:]]|$)"
+  local -a pipeline_status
+  local od_status
+  local grep_status
+
+  [[ "$byte" =~ ^[[:xdigit:]][[:xdigit:]]$ ]] || return 2
+  byte="${byte,,}"
+
+  if LC_ALL=C od -An -tx1 -v "$file" 2>/dev/null \
+    | LC_ALL=C grep -E "(^|[[:space:]])${byte}([[:space:]]|$)" >/dev/null; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+
+  od_status="${pipeline_status[0]}"
+  grep_status="${pipeline_status[1]}"
+  [[ "$od_status" -eq 0 ]] || return 2
+
+  case "$grep_status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+require_absent_hex_byte() {
+  local file="$1"
+  local byte="$2"
+  local label="$3"
+  local scan_status
+
+  file_has_hex_byte "$file" "$byte"
+  scan_status=$?
+  case "$scan_status" in
+    0)
+      printf 'async-profiler version stdout contains forbidden %s byte\n' "$label" >&2
+      return 1
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      printf 'async-profiler version stdout %s byte scan failed\n' "$label" >&2
+      return 1
+      ;;
+  esac
 }
 
 validate_asprof_version_stdout() {
@@ -96,8 +141,8 @@ validate_asprof_version_stdout() {
   local version
   local suffix
 
-  ! file_has_hex_byte "$stdout_file" 00 || return 1
-  ! file_has_hex_byte "$stdout_file" 1b || return 1
+  require_absent_hex_byte "$stdout_file" 00 NUL || return 1
+  require_absent_hex_byte "$stdout_file" 1b ANSI || return 1
 
   line_feed_count="$(LC_ALL=C tr -cd '\n' <"$stdout_file" | wc -c | tr -d '[:space:]')"
   [[ "$line_feed_count" -le 1 ]] || return 1
@@ -1481,6 +1526,8 @@ case "$action" in
   fixture-assert-ready-response) assert_smoke_ready_response "$1" ;;
   fixture-assert-cpu-response) assert_cpu_smoke_response "$1" ;;
   fixture-assert-allocation-response) assert_allocation_smoke_response "$1" ;;
+  fixture-file-has-hex-byte) file_has_hex_byte "$1" "$2" ;;
+  fixture-validate-asprof-version-stdout) validate_asprof_version_stdout "$1" "$2" ;;
   fixture-collapsed-total) collapsed_counter_total "$1" >/dev/null ;;
   fixture-parse-engine) extract_cpu_engine_from_jfr_json "$1" >/dev/null ;;
   fixture-smoke-one-event) smoke_one_event "$@" ;;
