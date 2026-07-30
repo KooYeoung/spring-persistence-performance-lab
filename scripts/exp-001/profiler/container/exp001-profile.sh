@@ -5,6 +5,7 @@ ASPROF_HOME="${EXP001_ASPROF_HOME:-/opt/async-profiler}"
 ASPROF_BIN="$ASPROF_HOME/bin/asprof"
 JFRCONV_BIN="$ASPROF_HOME/bin/jfrconv"
 ASPROF_LIB="$ASPROF_HOME/lib/libasyncProfiler.so"
+ASPROF_EXPECTED_VERSION="4.5"
 JFR_BIN="${EXP001_JFR_BIN:-jfr}"
 JAVA_BIN="${EXP001_JAVA_BIN:-java}"
 CURL_BIN="${EXP001_CURL_BIN:-curl}"
@@ -79,6 +80,95 @@ require_executable() {
   [[ -x "$file" ]] || die "Executable file is missing: $file"
 }
 
+file_has_hex_byte() {
+  local file="$1"
+  local byte="$2"
+  local -a pipeline_status
+  local od_status
+  local grep_status
+
+  [[ "$byte" =~ ^[[:xdigit:]][[:xdigit:]]$ ]] || return 2
+  byte="${byte,,}"
+
+  if LC_ALL=C od -An -tx1 -v "$file" 2>/dev/null \
+    | LC_ALL=C grep -E "(^|[[:space:]])${byte}([[:space:]]|$)" >/dev/null; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+
+  od_status="${pipeline_status[0]}"
+  grep_status="${pipeline_status[1]}"
+  [[ "$od_status" -eq 0 ]] || return 2
+
+  case "$grep_status" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+require_absent_hex_byte() {
+  local file="$1"
+  local byte="$2"
+  local label="$3"
+  local scan_status
+
+  file_has_hex_byte "$file" "$byte"
+  scan_status=$?
+  case "$scan_status" in
+    0)
+      printf 'async-profiler version stdout contains forbidden %s byte\n' "$label" >&2
+      return 1
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      printf 'async-profiler version stdout %s byte scan failed\n' "$label" >&2
+      return 1
+      ;;
+  esac
+}
+
+validate_asprof_version_stdout() {
+  local stdout_file="$1"
+  local expected_version="$2"
+  local line_feed_count
+  local stdout
+  local product
+  local product_lower
+  local version
+  local suffix
+
+  require_absent_hex_byte "$stdout_file" 00 NUL || return 1
+  require_absent_hex_byte "$stdout_file" 1b ANSI || return 1
+
+  line_feed_count="$(LC_ALL=C tr -cd '\n' <"$stdout_file" | wc -c | tr -d '[:space:]')"
+  [[ "$line_feed_count" -le 1 ]] || return 1
+
+  stdout="$(cat "$stdout_file")"
+  stdout="${stdout%$'\r'}"
+  [[ "$stdout" != *$'\r'* ]] || return 1
+  [[ "$stdout" != *$'\n'* ]] || return 1
+
+  if [[ ! "$stdout" =~ ^[[:blank:]]*([^[:blank:]]+)[[:blank:]]+([0-9]+[.][0-9]+([.][0-9]+)?)([[:blank:]]+.*)?[[:blank:]]*$ ]]; then
+    return 1
+  fi
+
+  product="${BASH_REMATCH[1]}"
+  product_lower="${product,,}"
+  version="${BASH_REMATCH[2]}"
+  suffix="${BASH_REMATCH[4]:-}"
+
+  [[ "$product_lower" == "async-profiler" ]] || return 1
+  [[ "$version" == "$expected_version" ]] || return 1
+
+  if [[ -n "$suffix" && "$suffix" =~ (^|[^0-9.])([0-9]+[.][0-9]+([.][0-9]+)?)([^0-9.]|$) ]]; then
+    return 1
+  fi
+}
+
 require_tool() {
   require_executable "$ASPROF_BIN"
   require_executable "$JFRCONV_BIN"
@@ -86,11 +176,26 @@ require_tool() {
   command -v "$JFR_BIN" >/dev/null 2>&1 || die "JDK jfr tool is missing"
   command -v "$JAVA_BIN" >/dev/null 2>&1 || die "JDK java tool is missing"
 
-  local version
-  version="$("$ASPROF_BIN" --version 2>&1 || true)"
-  printf '%s\n' "$version" | grep -F 'async-profiler 4.5' >/dev/null \
-    || die "async-profiler version does not match the lock"
-  log "async-profiler 4.5 verified"
+  local stdout_file
+  local stderr_file
+  local asprof_exit
+  stdout_file="$(mktemp -t exp001-asprof-version-stdout.XXXXXX)"
+  stderr_file="$(mktemp -t exp001-asprof-version-stderr.XXXXXX)"
+
+  if "$ASPROF_BIN" --version >"$stdout_file" 2>"$stderr_file"; then
+    asprof_exit=0
+  else
+    asprof_exit=$?
+  fi
+
+  if [[ "$asprof_exit" -ne 0 ]] \
+    || ! validate_asprof_version_stdout "$stdout_file" "$ASPROF_EXPECTED_VERSION"; then
+    rm -f "$stdout_file" "$stderr_file"
+    die "async-profiler version does not match the lock"
+  fi
+
+  rm -f "$stdout_file" "$stderr_file"
+  log "async-profiler ${ASPROF_EXPECTED_VERSION} verified"
 }
 
 safe_name() {
@@ -1421,6 +1526,8 @@ case "$action" in
   fixture-assert-ready-response) assert_smoke_ready_response "$1" ;;
   fixture-assert-cpu-response) assert_cpu_smoke_response "$1" ;;
   fixture-assert-allocation-response) assert_allocation_smoke_response "$1" ;;
+  fixture-file-has-hex-byte) file_has_hex_byte "$1" "$2" ;;
+  fixture-validate-asprof-version-stdout) validate_asprof_version_stdout "$1" "$2" ;;
   fixture-collapsed-total) collapsed_counter_total "$1" >/dev/null ;;
   fixture-parse-engine) extract_cpu_engine_from_jfr_json "$1" >/dev/null ;;
   fixture-smoke-one-event) smoke_one_event "$@" ;;
