@@ -1,6 +1,6 @@
 # EXP-001 Async-profiler Phase B Protocol
 
-상태: harness 구현 단계. Actual profiler execution과 evidence publication은 smoke 통과 후 별도 단계에서 수행한다.
+상태: Level 0 smoke `BLOCKED`, Actual profile `NOT_APPLIED`, publication `NOT_CREATED`.
 
 이 문서는 EXP-001 Phase B async-profiler evidence protocol이다. Phase A official timing result는 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md`가 계속 소유한다.
 
@@ -28,6 +28,67 @@ Phase B profiler evidence:
 - tracked artifact: sanitized allowlist 4개
 
 Phase B 결과는 Phase A elapsed result의 대표값으로 사용하지 않는다.
+
+## 현재 실행 결과
+
+### 실행 기준
+
+- 실행 branch: `exp/exp-001-profiler-smoke`
+- 실행 commit: `647d10bb0ec4f868c32a2aca3b652f244e602101`
+- branch 성격: `local historical runtime branch`
+- main 반영: `NOT_APPLIED`
+- push/PR/merge: `NOT_APPLIED`
+
+이 smoke 결과는 위 local historical runtime branch에서 확인한 결과이며, 해당 profiler 보강 commit들은 현재 main에 포함되어 있지 않다.
+
+- Level 0 smoke attempted: `true`
+- attempts: `1`
+- retry: `NOT_APPLIED`
+- readiness: `VERIFIED`, `PASS`
+- require-tool: `VERIFIED`, `PASS`
+- concurrency: `VERIFIED`, `PASS`
+- statuses: `{200,409}`
+- CPU profiler start: `VERIFIED`, `PASS`
+- CPU workload: `VERIFIED`, `PASS`
+- CPU stop/JFR: `BLOCKED`
+- allocation: `NOT_REACHED`
+- cleanup: `VERIFIED`, `PASS`
+- marker v2: `NOT_CREATED`
+- actual profile: `NOT_APPLIED`
+
+위 결과는 Phase B profiler smoke의 상태이며 Phase A official benchmark를 무효화하지 않는다.
+
+## Diagnostic
+
+- local ignored artifact: `artifacts/exp-001/profiling/smoke-20260731T131941Z/raw/smoke/cpu.asprof-stop-diagnostic.json`
+- SHA-256: `952F5C5B4F6E1F2600B963388452779BEB3731C73E099A901BA67F6EB401B1E9`
+- reason: `jfr-temp-missing`
+- rawExit: `0`
+- stdout/stderr: `0 bytes / 0 bytes`
+- temp/final JFR: 생성되지 않음
+- root cause: `UNVERIFIED`
+- classification: `CPU_STOP_JFR_ROOT_CAUSE_UNRESOLVED`
+
+위 diagnostic은 local ignored runtime artifact이다. Git에 포함된 canonical Evidence가 아니며 다른 clone에서 해당 path의 존재를 보장하지 않는다. 보존된 정보만으로 permission, seccomp, perf 또는 PID 문제라고 추측하지 않는다.
+
+## Fixture limitation
+
+- independent fixture revalidation: `PARTIAL`
+- Windows working-tree CRLF 문제가 확인되었다.
+- local LF 변환 후 Bash syntax는 `PASS`였다.
+- portable `jq` 부재로 full fixture suite는 완료되지 않았다.
+- fixture suite가 `PASS`하지 않은 상태에서 smoke가 실행되었다.
+
+이 제한은 `PASS`로 승격하지 않는다.
+
+## Scope closure
+
+- scopeFrozen: `true`
+- additionalHarnessChangesAllowed: `false`
+- Level 1/2: `NOT_APPLIED`
+- retry: `NOT_APPLIED`
+- runtime branch push/PR/merge: `NOT_APPLIED`
+- final profiler result: `BLOCKED`
 
 ## Tool Pin
 

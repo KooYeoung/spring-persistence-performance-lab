@@ -2,7 +2,14 @@
 
 Spring Boot와 PostgreSQL에서 합성 데이터 기반 JPA `saveAll` 경로와 Spring JDBC batch 경로의 저장 동작 및 정합성을 검증하는 공개 실험 저장소.
 
-M0는 정합성만 검증한다. EXP-001은 실행하지 않았으며, 공식 50,000건 처리 시간, 처리량, CPU profile, allocation 결과를 공개하지 않는다.
+M0는 정합성만 검증한다. EXP-001 Phase A official benchmark는 `results/exp-001/20260727T053643Z-2d76b26`에 공개되어 있으며, Phase B profiler smoke와 actual profile은 별도 상태로 관리한다.
+
+## 현재 실험 상태
+
+- M0 정합성 검증: 합성 입력 저장 결과의 row count, key set, duplicate key, missing key, normalized snapshot, SHA-256 checksum을 검증한다.
+- EXP-001 Phase A official benchmark: `VERIFIED`. official JSON 12개, warm-up JSON 2개, 총 16개 파일이 `results/exp-001/20260727T053643Z-2d76b26`에 있다.
+- EXP-001 Phase B profiler smoke: `BLOCKED`. Level 0 smoke에서 CPU stop/JFR 생성이 완료되지 않았다.
+- Actual profile: `NOT_APPLIED`. Phase B 상세 상태는 [EXP-001 Async-profiler Phase B Protocol](docs/experiments/EXP-001-async-profiler.md)이 소유한다.
 
 ## 기술 스택
 
@@ -74,8 +81,8 @@ M0에 포함되는 항목:
 M0에서 제외되는 항목:
 
 - controller 또는 benchmark HTTP endpoint
-- EXP-001 official run
-- 공식 50,000건 성능 결과 공개
+- M0 범위 안에서 EXP-001 official run 실행
+- M0 범위 안에서 공식 50,000건 성능 결과 생성 또는 갱신
 - profiler artifact
 
 이 프로젝트는 [MIT License](LICENSE)를 따른다.
