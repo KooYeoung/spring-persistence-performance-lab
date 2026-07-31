@@ -120,7 +120,9 @@ unrelated refactor, 새 abstraction, 새 fixture suite, 새 문서, 새 결과 �
 
 ### Human Approval
 
-read-only 판정 이후에도 branch 생성, commit, push, PR 생성, merge, 새 실험 실행, profiler 실행, benchmark 실행, 권한 상승, 실패 후 재시도, 실패 산출물 삭제는 별도 승인 경계로 취급한다. 실패 후 재시도는 원인 확인과 변경된 상태 확인 뒤 별도로 승인된 새 작업일 때만 제안한다.
+read-only 판정 이후에도 branch 생성, commit, push, PR 생성, merge, 새 실험 실행, profiler 실행, benchmark 실행, 권한 상승, 실패 후 재시도는 별도 승인 경계로 취급한다. 실패 후 재시도는 원인 확인과 변경된 상태 확인 뒤 별도로 승인된 새 작업일 때만 제안한다.
+
+실패 Evidence와 실패 상태를 입증하는 원본 산출물은 사람 승인 여부와 관계없이 보존한다. 임시 파일이나 재생성 가능한 비-Evidence 산출물 정리는 실패 Evidence 삭제와 구분해 별도 작업 범위로 판단한다.
 
 승인되지 않은 작업을 판정 결과에 끼워 넣지 않는다. 변경이 필요하면 사람이 검토할 수 있도록 근거와 최소 작업만 제시한다.
 
