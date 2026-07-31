@@ -96,9 +96,11 @@ validator를 검증하기 위한 새 validator, 단일 실험을 위한 범용 �
 
 같은 지원 도구 수정은 최대 2회, 같은 문제의 리뷰 사이클은 최대 2회로 제한한다.
 
-횟수 제한에 도달한 뒤 같은 변경을 이름만 바꾸어 우회하려는 경우 현재 작업을 중단하고 사람 검토로 넘긴다.
+횟수 제한에 도달하면 같은 내용 변경은 동결한다. 세 번째 직접 amend, 새 Issue, stacked PR, replacement PR로 같은 결과를 완성하려는 우회도 금지한다.
 
-이전 실패를 지우거나 성공 Evidence로 덮어쓰는 방식으로 재시도하지 않는다.
+횟수 도달은 PR 전체 자동 중단을 뜻하지 않는다. 실제 `BLOCKING`이면 PR을 중단하고 사람 결정을 요청하고, 비차단 finding이면 추가 변경 없이 현재 결과를 유지한다.
+
+실패 후 동일 시도를 자동 반복하지 않는다. 실패 원인을 먼저 확인하고, 관련 상태가 바뀌었으며, 별도 사람 승인이 있을 때만 새 작업으로 재시도한다. 실패 Evidence를 삭제하거나 성공 Evidence로 덮어쓰지 않는다.
 
 ### Minimal Change
 
@@ -118,7 +120,7 @@ unrelated refactor, 새 abstraction, 새 fixture suite, 새 문서, 새 결과 �
 
 ### Human Approval
 
-read-only 판정 이후에도 branch 생성, commit, push, PR 생성, merge, 새 실험 실행, profiler 실행, benchmark 실행, 권한 상승, 실패 산출물 삭제는 별도 승인 경계로 취급한다.
+read-only 판정 이후에도 branch 생성, commit, push, PR 생성, merge, 새 실험 실행, profiler 실행, benchmark 실행, 권한 상승, 실패 후 재시도, 실패 산출물 삭제는 별도 승인 경계로 취급한다. 실패 후 재시도는 원인 확인과 변경된 상태 확인 뒤 별도로 승인된 새 작업일 때만 제안한다.
 
 승인되지 않은 작업을 판정 결과에 끼워 넣지 않는다. 변경이 필요하면 사람이 검토할 수 있도록 근거와 최소 작업만 제시한다.
 
