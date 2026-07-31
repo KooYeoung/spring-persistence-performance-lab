@@ -82,6 +82,7 @@ HTTP endpoint, schema ownership, `ddl-auto`처럼 정책 강도가 다른 항목
 - validator를 검증하기 위한 validator가 필요함.
 - fixture를 검증하기 위한 fixture가 필요함.
 - 완료 조건이 작업 중 증가함.
+- 같은 지원 도구 수정이 2회 한도에 도달했거나 이를 초과하려 함.
 - 같은 결과를 이름만 바꿔 계속 수정함.
 - review cycle 제한을 새 Issue, stacked PR, replacement PR로 우회함.
 
