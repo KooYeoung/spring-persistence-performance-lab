@@ -57,7 +57,7 @@ This repository is a public Spring Boot persistence benchmark lab.
 ```sh
 git rev-parse --show-toplevel
 git rev-parse HEAD
-git status --short --branch
+git --no-optional-locks status --short --branch
 ```
 
 - 실행 순서: 위 세 명령을 작성된 순서대로 각각 실행한다.
@@ -66,7 +66,7 @@ git status --short --branch
 - 성공: 세 명령이 모두 native exit code `0`이면 preflight 수집 완료로 기록한다.
 - 실패: 한 명령이 non-zero이면 해당 명령에서 중단하고 실패한 명령, native exit code와 원본 stderr를 기록한다. 실행하지 않은 후속 명령은 `NOT_REACHED`로 기록하며 자동 retry하지 않는다.
 - 상태 정보: dirty working tree, detached HEAD, upstream 미설정 및 ahead/behind 정보 미표시는 해당 Git 명령이 성공했다면 실패가 아니다.
-- 동작 경계: `READ_ONLY`이며 repository를 변경하거나 network를 사용하지 않는다. `fetch`, `pull` 및 remote API 호출을 수행하지 않는다.
+- 동작 경계: `READ_ONLY`이며 repository를 변경하거나 network를 사용하지 않는다. status 명령은 `--no-optional-locks`를 사용해 optional index refresh/write를 방지하며, `fetch`, `pull` 및 remote API 호출을 수행하지 않는다.
 - 원격 경계: upstream과 ahead/behind 정보는 표시되는 경우 local tracking ref 기준이며 remote 최신성을 보장하지 않는다.
 - 보장하지 않는 것: output schema, automatic parsing, 별도 wrapper 및 통합 exit code.
 
