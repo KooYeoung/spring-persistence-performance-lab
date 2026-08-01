@@ -62,4 +62,4 @@ assignees: ""
 - [ ] Issue 또는 PR comment 작성 승인
 - [ ] merge 승인
 - [ ] test/build/benchmark/profiler 실행 승인
-- [ ] repository 또는 GitHub mutation 승인
+- [ ] 위 항목에 포함되지 않은 추가 repository 또는 GitHub mutation 승인
