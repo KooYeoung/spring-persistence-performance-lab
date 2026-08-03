@@ -4,7 +4,7 @@
 
 실험 질문: 동일한 공개 구현에서 50,000건 저장을 수행할 때 JPA `saveAll` 경로와 JDBC batch 경로의 elapsed time 차이는 CPU sample과 sampled allocation 관점에서 어떤 원인 후보를 보이는가?
 
-현재 상태: Level 0 smoke는 `BLOCKED`이고 Actual profile은 `NOT_APPLIED`이다. 현재 종료 범위에서는 Actual profile을 실행하지 않는다. 상세 결과는 `docs/experiments/EXP-001-async-profiler.md`를 참조한다.
+현재 상태: post-fix Level 0 smoke는 `VERIFIED`이고 Actual profile은 `NOT_APPLIED`이다. Publication은 `NOT_CREATED`이며 상세 결과는 `docs/experiments/EXP-001-async-profiler.md`를 참조한다.
 
 ## 경계
 

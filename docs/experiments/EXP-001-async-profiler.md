@@ -1,6 +1,6 @@
 # EXP-001 Async-profiler Phase B Protocol
 
-상태: Level 0 smoke `BLOCKED`, Actual profile `NOT_APPLIED`, publication `NOT_CREATED`.
+상태: Level 0 smoke `VERIFIED`, Actual profile `NOT_APPLIED`, publication `NOT_CREATED`.
 
 이 문서는 EXP-001 Phase B async-profiler evidence protocol이다. Phase A official timing result는 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md`가 계속 소유한다.
 
@@ -31,32 +31,64 @@ Phase B 결과는 Phase A elapsed result의 대표값으로 사용하지 않는�
 
 ## 현재 실행 결과
 
-### 실행 기준
+### Post-fix Level 0 smoke
 
-- 실행 branch: `exp/exp-001-profiler-smoke`
-- 실행 commit: `647d10bb0ec4f868c32a2aca3b652f244e602101`
-- branch 성격: `local historical runtime branch`
-- main 반영: `NOT_APPLIED`
-- push/PR/merge: `NOT_APPLIED`
+- Issue: #29
+- 실행 branch: `main`
+- 실행 commit: `4cca0ee2dc57e1945dc9f170c1092cdc3bae6afb`
+- smoke run id: `smoke-20260803T040521Z`
+- execution UTC: `2026-08-03T04:05:19Z` ~ `2026-08-03T04:05:46Z`
+- canonical command execution count: `1`
+- native exit code: `0`
+- async-profiler: `4.5`
+- markerFormatVersion: `2`
+- smokeSuccess: `true`
+- marker sourceRevision: `4cca0ee2dc57e1945dc9f170c1092cdc3bae6afb`
+- marker harnessRevision: `2bfe1621f8c34e6746a8c0f59299ce4854345d72152cd278a67bd44ee53cb261`
+- selectedCpuEngine: `ctimer`
+- engineVerification: `jfr-active-setting-engine:ctimer`
 
-이 smoke 결과는 위 local historical runtime branch에서 확인한 결과이며, 해당 profiler 보강 commit들은 현재 main에 포함되어 있지 않다.
+CPU 요청 세션의 실제 engine은 JFR `jdk.ActiveSetting`에서 `ctimer`로 검증되었다. 산출물명이 `cpu.jfr`와 `cpu.cpu.collapsed`이고 `selectedCpuEngine=ctimer`인 것은 smoke runner 계약상 허용되는 결과이다.
 
 - Level 0 smoke attempted: `true`
 - attempts: `1`
 - retry: `NOT_APPLIED`
 - readiness: `VERIFIED`, `PASS`
 - require-tool: `VERIFIED`, `PASS`
-- concurrency: `VERIFIED`, `PASS`
-- statuses: `{200,409}`
 - CPU profiler start: `VERIFIED`, `PASS`
 - CPU workload: `VERIFIED`, `PASS`
+- target JVM identity gate: `VERIFIED`, `PASS`
+- CPU stop/JFR: `VERIFIED`, `PASS`
+- CPU collapsed conversion: `VERIFIED`, `PASS`
+- CPU sample count: `315`
+- allocation profiler start: `VERIFIED`, `PASS`
+- allocation workload: `VERIFIED`, `PASS`
+- allocation stop/JFR: `VERIFIED`, `PASS`
+- allocation collapsed conversion: `VERIFIED`, `PASS`
+- allocation sample count: `60`
+- allocation sampled bytes: `62391216`
+- cleanup: `VERIFIED PASS`
+- marker v2: `VERIFIED`, `PASS`
+- actual profile: `NOT_APPLIED`
+- publication: `NOT_CREATED`
+
+Final JFR와 collapsed output은 모두 non-empty였다. profiler stop은 성공 경로였고 non-empty temporary JFR 확인 후 final JFR로 승격되었다. stdout/stderr capture 크기는 `6652 / 5348` bytes였으며, stderr는 Compose lifecycle, readiness poll, `JAVA_TOOL_OPTIONS` 출력으로 분류하고 command failure로 보지 않는다. stdout/stderr의 local absolute path와 사용자명은 공개 문서에 기록하지 않는다.
+
+위 결과는 post-fix Level 0 smoke의 상태이며 Phase A official benchmark를 무효화하지 않는다. Phase B actual profile과 tracked publication은 아직 생성하지 않았다.
+
+### Historical pre-fix Level 0 smoke
+
+- 실행 branch: `exp/exp-001-profiler-smoke`
+- 실행 commit: `647d10bb0ec4f868c32a2aca3b652f244e602101`
+- branch 성격: `local historical runtime branch`
+- main 반영: `NOT_APPLIED`
+- push/PR/merge: `NOT_APPLIED`
 - CPU stop/JFR: `BLOCKED`
 - allocation: `NOT_REACHED`
-- cleanup: `VERIFIED`, `PASS`
 - marker v2: `NOT_CREATED`
-- actual profile: `NOT_APPLIED`
+- cleanup: `VERIFIED PASS`
 
-위 결과는 Phase B profiler smoke의 상태이며 Phase A official benchmark를 무효화하지 않는다.
+이 historical smoke 결과는 Issue #27 수정 전 local runtime branch에서 확인한 결과이며, post-fix Level 0 smoke 결과로 대체해서 성공 Evidence로 해석하지 않는다.
 
 ## Diagnostic
 
@@ -76,8 +108,9 @@ Phase B 결과는 Phase A elapsed result의 대표값으로 사용하지 않는�
 - primary harness defect: `VERIFIED_BY_STATIC_EVIDENCE`
 - sole runtime cause: `NOT_CLAIMED`
 - harness fix: `IMPLEMENTED`
-- post-fix runtime validation: `NOT_RUN`
-- Level 0 smoke: `BLOCKED`
+- post-fix runtime validation: `VERIFIED`
+- JFR session fix effectiveness: `VERIFIED_FOR_LEVEL0_SMOKE`
+- Level 0 smoke: `VERIFIED`
 - actual profile: `NOT_APPLIED`
 - publication: `NOT_CREATED`
 
@@ -85,7 +118,7 @@ Phase B 결과는 Phase A elapsed result의 대표값으로 사용하지 않는�
 
 Issue #27 수정 후 harness는 final JFR 경로와 temporary JFR 경로를 `asprof start` 전에 결정하고, CPU/ctimer/alloc start 명령에 `-o jfr -f <temporary-jfr>`를 지정한다. 정상 stop은 output을 다시 지정하지 않고 동일 session을 종료하며, stop 성공과 non-empty temporary JFR를 확인한 뒤에만 final JFR로 승격한다.
 
-이 수정은 static/fixture 수준의 harness defect remediation이다. Docker Level 0 smoke, 실제 async-profiler 실행, actual profile 및 publication은 이 문서 변경만으로 검증되지 않았으며 별도 Human Gate 전까지 `NOT_RUN` 또는 `NOT_APPLIED` 상태를 유지한다.
+Issue #29 post-fix Level 0 smoke에서 이 수정은 실제 Docker container와 async-profiler 4.5 실행 환경 기준으로 검증되었다. 이 검증은 Level 0 smoke 범위에 한정하며, actual profile 및 publication은 별도 Human Gate 전까지 `NOT_APPLIED` 또는 `NOT_CREATED` 상태를 유지한다.
 
 ## Fixture validation
 
@@ -110,10 +143,11 @@ Issue #27 static fixture validation:
 
 - scopeFrozen: `true`
 - additionalHarnessChangesAllowed: `false`
-- Level 1/2: `NOT_APPLIED`
+- Level 1/2: `NOT_RUN`
 - retry: `NOT_APPLIED`
-- runtime branch push/PR/merge: `NOT_APPLIED`
-- final profiler result: `BLOCKED`
+- actual profile: `NOT_APPLIED`
+- publication: `NOT_CREATED`
+- final profiler result: `NOT_CREATED`
 
 ## Tool Pin
 
