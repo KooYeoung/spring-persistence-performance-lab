@@ -464,6 +464,16 @@ SH
 #!/usr/bin/env bash
 set -Eeuo pipefail
 printf '%s\n' "$*" >>"${EXP001_FAKE_ASPROF_LOG:?}"
+find_output_arg() {
+  local output=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f) output="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s\n' "$output"
+}
 case "${1:-}" in
   --version)
     if [[ -n "${EXP001_FAKE_ASPROF_VERSION_STDOUT_FILE:-}" ]]; then
@@ -479,18 +489,25 @@ case "${1:-}" in
     ;;
   start)
     [[ "${EXP001_FAKE_ASPROF_START_FAIL:-0}" != "1" ]] || exit 7
+    output="$(find_output_arg "$@")"
+    if [[ -n "$output" ]]; then
+      printf '%s\n' "$output" >"${EXP001_FAKE_ASPROF_STATE:?}"
+    fi
     ;;
   stop)
     [[ "${EXP001_FAKE_ASPROF_STOP_FAIL:-0}" != "1" ]] || exit 8
-    output=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        -f) output="$2"; shift 2 ;;
-        *) shift ;;
-      esac
-    done
+    output="$(find_output_arg "$@")"
+    if [[ -z "$output" && -f "${EXP001_FAKE_ASPROF_STATE:?}" ]]; then
+      output="$(cat "$EXP001_FAKE_ASPROF_STATE")"
+    fi
     if [[ -n "$output" ]]; then
-      printf 'fake-jfr\n' >"$output"
+      if [[ "${EXP001_FAKE_ASPROF_SKIP_JFR:-0}" == "1" ]]; then
+        :
+      elif [[ "${EXP001_FAKE_ASPROF_EMPTY_JFR:-0}" == "1" ]]; then
+        : >"$output"
+      else
+        printf 'fake-jfr\n' >"$output"
+      fi
     fi
     ;;
   *)
@@ -528,12 +545,15 @@ SH
   chmod +x "$root/bin/curl" "$root/bin/asprof" "$root/bin/jfrconv" "$root/bin/java" "$root/bin/jfr"
 }
 
-run_fake_smoke_event() {
-  local proc_root="$1"
-  local smoke_dir="$2"
-  local body="$3"
-  local engine_json="$4"
-  shift 4
+run_fake_smoke_event_for() {
+  local event="$1"
+  local interval="$2"
+  local workload="$3"
+  local proc_root="$4"
+  local smoke_dir="$5"
+  local body="$6"
+  local engine_json="$7"
+  shift 7
   env \
     EXP001_PROC_ROOT="$proc_root" \
     EXP001_ASPROF_HOME="$fake_tools" \
@@ -542,11 +562,16 @@ run_fake_smoke_event() {
     EXP001_FAKE_CURL_BODY="$body" \
     EXP001_FAKE_CURL_LOG="$fake_curl_log" \
     EXP001_FAKE_ASPROF_LOG="$fake_asprof_log" \
+    EXP001_FAKE_ASPROF_STATE="$fake_asprof_state" \
     EXP001_FAKE_JFRCONV_LOG="$fake_jfrconv_log" \
     EXP001_FAKE_JFR_LOG="$fake_jfr_log" \
     EXP001_FAKE_JFR_JSON="$engine_json" \
     SPRING_PROFILES_ACTIVE=exp001 \
-    "$@" "$CONTAINER_RUNNER" fixture-smoke-one-event cpu 10ms 123 987654 "$smoke_dir" cpu >/dev/null 2>&1
+    "$@" "$CONTAINER_RUNNER" fixture-smoke-one-event "$event" "$interval" 123 987654 "$smoke_dir" "$workload" >/dev/null 2>&1
+}
+
+run_fake_smoke_event() {
+  run_fake_smoke_event_for cpu 10ms cpu "$@"
 }
 
 run_fake_smoke() {
@@ -572,6 +597,7 @@ run_fake_smoke() {
     EXP001_FAKE_CURL_ALLOCATION_BODY="$allocation_body" \
     EXP001_FAKE_CURL_LOG="$fake_curl_log" \
     EXP001_FAKE_ASPROF_LOG="$fake_asprof_log" \
+    EXP001_FAKE_ASPROF_STATE="$fake_asprof_state" \
     EXP001_FAKE_JFRCONV_LOG="$fake_jfrconv_log" \
     EXP001_FAKE_JFR_LOG="$fake_jfr_log" \
     EXP001_FAKE_JFR_JSON="$engine_json" \
@@ -593,11 +619,30 @@ assert_file_not_contains() {
   fi
 }
 
+assert_file_non_empty() {
+  local file="$1"
+  [[ -s "$file" ]] || fail "expected file to be non-empty: $file"
+}
+
+assert_file_not_exists() {
+  local file="$1"
+  [[ ! -e "$file" ]] || fail "file should not exist: $file"
+}
+
+assert_recorded_temp_jfr_not_exists() {
+  [[ -f "$fake_asprof_state" ]] || return 0
+  local temp_jfr
+  temp_jfr="$(cat "$fake_asprof_state")"
+  [[ -n "$temp_jfr" ]] || return 0
+  assert_file_not_exists "$temp_jfr"
+}
+
 reset_fake_tool_logs() {
   : >"$fake_curl_log"
   : >"$fake_asprof_log"
   : >"$fake_jfrconv_log"
   : >"$fake_jfr_log"
+  rm -f "$fake_asprof_state"
 }
 
 run_container_fixture() {
@@ -764,6 +809,7 @@ temp_root="$(mktemp -d "$tmp_parent/exp001-profiler-fixtures.XXXXXX")"
 fake_tools="$temp_root/fake-tools"
 fake_curl_log="$temp_root/fake-curl.log"
 fake_asprof_log="$temp_root/fake-asprof.log"
+fake_asprof_state="$temp_root/fake-asprof.state"
 fake_jfrconv_log="$temp_root/fake-jfrconv.log"
 fake_jfr_log="$temp_root/fake-jfr.log"
 write_fake_container_tools "$fake_tools"
@@ -1094,34 +1140,64 @@ reset_fake_tool_logs
 smoke_success_dir="$temp_root/smoke-event-success"
 mkdir -p "$smoke_success_dir"
 assert_success run_fake_smoke_event "$smoke_fixture_proc" "$smoke_success_dir" "$cpu_response" "$engine_good"
-assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
-assert_file_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
+assert_file_contains "$fake_asprof_state" "$smoke_success_dir/cpu.jfr.tmp."
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_non_empty "$smoke_success_dir/cpu.jfr"
 assert_file_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
 assert_file_contains "$fake_jfr_log" 'print --json --events jdk.ActiveSetting'
+
+reset_fake_tool_logs
+smoke_ctimer_success_dir="$temp_root/smoke-event-ctimer-success"
+mkdir -p "$smoke_ctimer_success_dir"
+assert_success run_fake_smoke_event_for ctimer 10ms cpu "$smoke_fixture_proc" "$smoke_ctimer_success_dir" "$cpu_response" "$engine_ctimer"
+assert_file_contains "$fake_asprof_log" 'start -e ctimer -i 10ms -o jfr -f'
+assert_file_contains "$fake_asprof_state" "$smoke_ctimer_success_dir/ctimer.jfr.tmp."
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_non_empty "$smoke_ctimer_success_dir/ctimer.jfr"
+
+reset_fake_tool_logs
+smoke_alloc_success_dir="$temp_root/smoke-event-alloc-success"
+mkdir -p "$smoke_alloc_success_dir"
+assert_success run_fake_smoke_event_for alloc 512k allocation "$smoke_fixture_proc" "$smoke_alloc_success_dir" "$allocation_response" "$engine_good"
+assert_file_contains "$fake_asprof_log" 'start -e alloc --alloc 512k -o jfr -f'
+assert_file_contains "$fake_asprof_state" "$smoke_alloc_success_dir/alloc.jfr.tmp."
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_non_empty "$smoke_alloc_success_dir/alloc.jfr"
 
 reset_fake_tool_logs
 smoke_start_fail_dir="$temp_root/smoke-event-start-fail"
 mkdir -p "$smoke_start_fail_dir"
 assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_start_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_ASPROF_START_FAIL=1
-assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
 assert_file_not_contains "$fake_asprof_log" 'stop'
 assert_file_not_contains "$fake_curl_log" 'curl'
+assert_file_not_exists "$smoke_start_fail_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
 
 reset_fake_tool_logs
 smoke_http_fail_dir="$temp_root/smoke-event-http-fail"
 mkdir -p "$smoke_http_fail_dir"
 assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_http_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_CURL_STATUS=500
-assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
 assert_file_contains "$fake_asprof_log" 'stop 123'
 assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_not_exists "$smoke_http_fail_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
 
 reset_fake_tool_logs
 smoke_response_fail_dir="$temp_root/smoke-event-response-fail"
 mkdir -p "$smoke_response_fail_dir"
 assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_response_fail_dir" "$cpu_bad_for_smoke" "$engine_good"
-assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
 assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
 assert_file_not_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+assert_file_not_exists "$smoke_response_fail_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
 
 reset_fake_tool_logs
 write_fake_proc "$smoke_fixture_proc" 123 "$uid"
@@ -1129,22 +1205,53 @@ smoke_identity_fail_dir="$temp_root/smoke-event-identity-fail"
 mkdir -p "$smoke_identity_fail_dir"
 assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_identity_fail_dir" "$cpu_response" "$engine_good" \
   EXP001_FAKE_IDENTITY_AFTER_CURL=111111 EXP001_FAKE_PROC_ROOT="$smoke_fixture_proc" EXP001_FAKE_PID=123
-assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms 123'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
 assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_not_exists "$smoke_identity_fail_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
 
 reset_fake_tool_logs
 write_fake_proc "$smoke_fixture_proc" 123 "$uid"
 smoke_stop_fail_dir="$temp_root/smoke-event-stop-fail"
 mkdir -p "$smoke_stop_fail_dir"
 assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_stop_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_ASPROF_STOP_FAIL=1
-assert_file_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
 assert_file_not_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+assert_file_not_exists "$smoke_stop_fail_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
+
+reset_fake_tool_logs
+smoke_temp_missing_dir="$temp_root/smoke-event-temp-missing"
+mkdir -p "$smoke_temp_missing_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_temp_missing_dir" "$cpu_response" "$engine_good" EXP001_FAKE_ASPROF_SKIP_JFR=1
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_not_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+assert_file_not_exists "$smoke_temp_missing_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
+
+reset_fake_tool_logs
+smoke_temp_empty_dir="$temp_root/smoke-event-temp-empty"
+mkdir -p "$smoke_temp_empty_dir"
+assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_temp_empty_dir" "$cpu_response" "$engine_good" EXP001_FAKE_ASPROF_EMPTY_JFR=1
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_not_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
+assert_file_not_exists "$smoke_temp_empty_dir/cpu.jfr"
+assert_recorded_temp_jfr_not_exists
 
 reset_fake_tool_logs
 smoke_conversion_fail_dir="$temp_root/smoke-event-conversion-fail"
 mkdir -p "$smoke_conversion_fail_dir"
 assert_failure run_fake_smoke_event "$smoke_fixture_proc" "$smoke_conversion_fail_dir" "$cpu_response" "$engine_good" EXP001_FAKE_JFRCONV_FAIL=1
-assert_file_contains "$fake_asprof_log" 'stop -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'start -e cpu -i 10ms -o jfr -f'
+assert_file_contains "$fake_asprof_log" 'stop 123'
+assert_file_not_contains "$fake_asprof_log" 'stop -o jfr -f'
 assert_file_contains "$fake_jfrconv_log" '--cpu --dot --norm -o collapsed'
 
 for path in \
