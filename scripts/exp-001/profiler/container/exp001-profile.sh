@@ -1203,20 +1203,27 @@ asprof_start_maybe() {
   local event="$1"
   local interval="$2"
   local pid="$3"
-  local stderr_file="$4"
-  require_no_clobber_maybe "$stderr_file" "$stderr_file.stdout" || return 1
+  local temp_jfr="$4"
+  local stderr_file="$5"
+  require_no_clobber_maybe "$temp_jfr" "$stderr_file" "$stderr_file.stdout" || return 1
+  rm -f "$temp_jfr"
 
+  local rc=0
   case "$event" in
     cpu|ctimer)
-      "$ASPROF_BIN" start -e "$event" -i "$interval" "$pid" >"$stderr_file.stdout" 2>"$stderr_file"
+      "$ASPROF_BIN" start -e "$event" -i "$interval" -o jfr -f "$temp_jfr" "$pid" >"$stderr_file.stdout" 2>"$stderr_file" || rc=$?
       ;;
     alloc)
-      "$ASPROF_BIN" start -e alloc --alloc "$interval" "$pid" >"$stderr_file.stdout" 2>"$stderr_file"
+      "$ASPROF_BIN" start -e alloc --alloc "$interval" -o jfr -f "$temp_jfr" "$pid" >"$stderr_file.stdout" 2>"$stderr_file" || rc=$?
       ;;
     *)
       return 2
       ;;
   esac
+  if [[ "$rc" != "0" ]]; then
+    rm -f "$temp_jfr"
+    return "$rc"
+  fi
 }
 
 asprof_start() {
@@ -1229,12 +1236,11 @@ asprof_stop_jfr() {
 
 asprof_stop_jfr_maybe() {
   local pid="$1"
-  local output="$2"
-  local stderr_file="$3"
-  local temp="${output}.tmp.$$"
+  local temp="$2"
+  local output="$3"
+  local stderr_file="$4"
   require_no_clobber_maybe "$output" "$stderr_file" "$stderr_file.stdout" || return 1
-  rm -f "$temp"
-  "$ASPROF_BIN" stop -o jfr -f "$temp" "$pid" >"$stderr_file.stdout" 2>"$stderr_file" \
+  "$ASPROF_BIN" stop "$pid" >"$stderr_file.stdout" 2>"$stderr_file" \
     || {
       rm -f "$temp"
       return 1
@@ -1243,7 +1249,10 @@ asprof_stop_jfr_maybe() {
     rm -f "$temp"
     return 1
   }
-  promote_no_clobber_maybe "$temp" "$output"
+  promote_no_clobber_maybe "$temp" "$output" || {
+    rm -f "$temp"
+    return 1
+  }
 }
 
 convert_cpu_collapsed() {
@@ -1317,6 +1326,7 @@ record_chunk() {
   local prefix="$profile_dir/${chunk_text}-${strategy}-${event}"
   local response="$prefix.response.raw"
   local jfr="$prefix.jfr"
+  local jfr_temp="${jfr}.tmp.$$"
   local start_log="$prefix.asprof-start.log"
   local stop_log="$prefix.asprof-stop.log"
   local session_active=0
@@ -1325,8 +1335,9 @@ record_chunk() {
   local stop_failure_rc=0
 
   log "profile chunk start: profile=$profile_id strategy=$strategy event=$event chunk=$chunk_text"
+  require_no_clobber "$jfr" "$jfr_temp" "$start_log" "$start_log.stdout" "$stop_log" "$stop_log.stdout"
   verify_jvm_identity "$pid" "$start_identity"
-  asprof_start "$event" "$interval" "$pid" "$start_log"
+  asprof_start "$event" "$interval" "$pid" "$jfr_temp" "$start_log"
   session_active=1
 
   if ! call_endpoint_maybe "$strategy" "$count" "$response"; then
@@ -1348,13 +1359,14 @@ record_chunk() {
         gate_error "$failure_message; best-effort profiler stop also failed: rc=$stop_failure_rc"
       fi
     fi
+    rm -f "$jfr_temp"
     if [[ "$stop_failure_rc" != "0" ]]; then
       die "$failure_message; profiler stop failed: rc=$stop_failure_rc"
     fi
     die "$failure_message"
   fi
 
-  if ! asprof_stop_jfr_maybe "$pid" "$jfr" "$stop_log"; then
+  if ! asprof_stop_jfr_maybe "$pid" "$jfr_temp" "$jfr" "$stop_log"; then
     die "async-profiler stop failed"
   fi
   session_active=0
@@ -1383,6 +1395,7 @@ smoke_one_event() {
   local smoke_dir="$5"
   local workload="$6"
   local jfr="$smoke_dir/${event}.jfr"
+  local jfr_temp="${jfr}.tmp.$$"
   local start_log="$smoke_dir/${event}.asprof-start.log"
   local stop_log="$smoke_dir/${event}.asprof-stop.log"
   local response="$smoke_dir/${event}.${workload}.response.raw"
@@ -1393,10 +1406,10 @@ smoke_one_event() {
   local failure_rc=0
   local failure_message=""
 
-  require_no_clobber "$jfr" "$start_log" "$start_log.stdout" "$stop_log" "$stop_log.stdout" "$response"
+  require_no_clobber "$jfr" "$jfr_temp" "$start_log" "$start_log.stdout" "$stop_log" "$stop_log.stdout" "$response"
   check_jvm_identity "$pid" "$start_identity" || return 9
 
-  if ! asprof_start_maybe "$event" "$interval" "$pid" "$start_log"; then
+  if ! asprof_start_maybe "$event" "$interval" "$pid" "$jfr_temp" "$start_log"; then
     return 10
   fi
   session_active=1
@@ -1419,11 +1432,12 @@ smoke_one_event() {
         gate_error "$failure_message; best-effort profiler stop also failed"
       fi
     fi
+    rm -f "$jfr_temp"
     gate_error "$failure_message"
     return "$failure_rc"
   fi
 
-  if ! asprof_stop_jfr_maybe "$pid" "$jfr" "$stop_log"; then
+  if ! asprof_stop_jfr_maybe "$pid" "$jfr_temp" "$jfr" "$stop_log"; then
     return 30
   fi
   session_active=0

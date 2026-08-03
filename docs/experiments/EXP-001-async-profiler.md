@@ -71,13 +71,38 @@ Phase B 결과는 Phase A elapsed result의 대표값으로 사용하지 않는�
 
 위 diagnostic은 local ignored runtime artifact이다. Git에 포함된 canonical Evidence가 아니며 다른 clone에서 해당 path의 존재를 보장하지 않는다. 보존된 정보만으로 permission, seccomp, perf 또는 PID 문제라고 추측하지 않는다.
 
-## Fixture limitation
+## Static Root Cause And Fix State
+
+- primary harness defect: `VERIFIED_BY_STATIC_EVIDENCE`
+- sole runtime cause: `NOT_CLAIMED`
+- harness fix: `IMPLEMENTED`
+- post-fix runtime validation: `NOT_RUN`
+- Level 0 smoke: `BLOCKED`
+- actual profile: `NOT_APPLIED`
+- publication: `NOT_CREATED`
+
+정적 진단에서 확인한 primary harness defect는 Issue #27 수정 전 harness가 `asprof start` 시점에 `-o jfr -f <temporary-jfr>`를 지정하지 않고, `asprof stop` 시점에만 JFR output을 요청한 session configuration mismatch이다.
+
+Issue #27 수정 후 harness는 final JFR 경로와 temporary JFR 경로를 `asprof start` 전에 결정하고, CPU/ctimer/alloc start 명령에 `-o jfr -f <temporary-jfr>`를 지정한다. 정상 stop은 output을 다시 지정하지 않고 동일 session을 종료하며, stop 성공과 non-empty temporary JFR를 확인한 뒤에만 final JFR로 승격한다.
+
+이 수정은 static/fixture 수준의 harness defect remediation이다. Docker Level 0 smoke, 실제 async-profiler 실행, actual profile 및 publication은 이 문서 변경만으로 검증되지 않았으며 별도 Human Gate 전까지 `NOT_RUN` 또는 `NOT_APPLIED` 상태를 유지한다.
+
+## Fixture validation
+
+Historical smoke limitation:
 
 - independent fixture revalidation: `PARTIAL`
 - Windows working-tree CRLF 문제가 확인되었다.
 - local LF 변환 후 Bash syntax는 `PASS`였다.
 - portable `jq` 부재로 full fixture suite는 완료되지 않았다.
 - fixture suite가 `PASS`하지 않은 상태에서 smoke가 실행되었다.
+
+Issue #27 static fixture validation:
+
+- shell syntax validation: `VERIFIED`, `PASS`
+- PowerShell fixture validation: `VERIFIED`, `PASS`
+- Bash profiler fixture validation: `PARTIAL`
+- Bash profiler fixture observation: PATH의 `bash`는 sourced `scripts/exp-001/macos/common.sh` CRLF에서 중단되었다. Git Bash는 `EXP-001 profiler fixture tests passed.` marker를 출력했지만 native exit code `0`으로 종료되지 않고 command timeout이 발생했으므로 `VERIFIED PASS`로 승격하지 않는다.
 
 이 제한은 `PASS`로 승격하지 않는다.
 
