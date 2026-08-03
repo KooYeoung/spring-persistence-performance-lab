@@ -133,11 +133,14 @@ Historical smoke limitation:
 Issue #27 static fixture validation:
 
 - shell syntax validation: `VERIFIED`, `PASS`
-- PowerShell fixture validation: `VERIFIED`, `PASS`
-- Bash profiler fixture validation: `PARTIAL`
-- Bash profiler fixture observation: PATH의 `bash`는 sourced `scripts/exp-001/macos/common.sh` CRLF에서 중단되었다. Git Bash는 `EXP-001 profiler fixture tests passed.` marker를 출력했지만 native exit code `0`으로 종료되지 않고 command timeout이 발생했으므로 `VERIFIED PASS`로 승격하지 않는다.
-
-이 제한은 `PASS`로 승격하지 않는다.
+- PowerShell fixture validation: `VERIFIED PASS`
+- Git Bash profiler fixture validation: `VERIFIED PASS`
+- Git Bash profiler fixture execution count: `1`
+- Git Bash profiler fixture pass marker: `VERIFIED PASS`, 2개 확인
+- Git Bash profiler fixture stderr: `VERIFIED PASS`, empty
+- Git Bash profiler fixture native exit code: `VERIFIED PASS`, `0`
+- Docker/container: `NOT_RUN`
+- actual profiler execution: `NOT_RUN`
 
 ## Scope closure
 
@@ -147,7 +150,6 @@ Issue #27 static fixture validation:
 - retry: `NOT_APPLIED`
 - actual profile: `NOT_APPLIED`
 - publication: `NOT_CREATED`
-- final profiler result: `NOT_CREATED`
 
 ## Tool Pin
 
