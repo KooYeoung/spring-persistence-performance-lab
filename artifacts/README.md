@@ -6,7 +6,7 @@ M0에는 benchmark artifact가 필요하지 않다.
 
 Git에 포함되는 tracked artifact에는 profiler HTML, raw stack trace, JFR, collapsed stack, raw response, log, heap dump, database dump, local absolute path, secret, private artifact, private source information을 저장하지 않는다.
 
-## Local Ignored Raw Artifact
+## Git에서 추적하지 않는 로컬 artifact
 
 승인된 profiler protocol이 생성한 local raw artifact는 `artifacts/exp-001/profiling/<profile-run-id>/`에 둘 수 있다. 이 경로의 raw artifact는 Git 추적 대상이 아니며 publication 결과가 아니고, 공개 evidence로 자동 승격하지 않는다. 기존 `.gitignore`와 profiler 문서의 정책을 따른다.
 
