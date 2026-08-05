@@ -2,7 +2,7 @@
 
 Spring Boot와 PostgreSQL에서 합성 데이터 기반 JPA `saveAll` 경로와 Spring JDBC batch 경로의 저장 동작 및 정합성을 검증하는 공개 실험 저장소.
 
-M0는 정합성만 검증한다. EXP-001 Phase A official benchmark는 `results/exp-001/20260727T053643Z-2d76b26`에 공개되어 있으며, Phase B profiler smoke와 actual profile은 별도 상태로 관리한다.
+M0 초기 범위는 정합성만 검증한다. EXP-001 Phase A official benchmark는 `results/exp-001/20260727T053643Z-2d76b26`에 공개되어 있으며, Phase B profiler smoke와 actual profile은 별도 상태로 관리한다.
 
 ## 기본 학습 흐름
 
@@ -76,7 +76,7 @@ Flyway가 스키마의 기준(Source of Truth)이다. Hibernate는 `ddl-auto: va
 - unique `business_key`
 - 필수 not-null 제약
 
-## M0 범위
+## M0 초기 범위
 
 M0에 포함되는 항목:
 
@@ -92,5 +92,7 @@ M0에서 제외되는 항목:
 - M0 범위 안에서 EXP-001 official run 실행
 - M0 범위 안에서 공식 50,000건 성능 결과 생성 또는 갱신
 - profiler artifact
+
+Phase B에서 추가된 EXP-001 profiling/smoke endpoint는 `exp001` profile에서만 활성화되며 M0 초기 범위와 구분된다.
 
 이 프로젝트는 [MIT License](LICENSE)를 따른다.
