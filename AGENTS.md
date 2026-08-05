@@ -19,8 +19,10 @@ This repository is a public Spring Boot persistence benchmark lab.
 
 ## 저장소 목적
 
+- 이 저장소의 기본 운영 방향은 작은 백엔드 질문을 빠르게 실험하고 결과와 해석을 누적하는 학습 저장소이다.
 - 이 저장소는 Spring Boot와 PostgreSQL 환경에서 Persistence 저장 경로의 정합성과 성능을 검증한다.
 - JPA `saveAll`과 Spring JDBC Batch의 저장 동작, 데이터 정합성, 처리 시간, 처리량 및 성능 차이를 재현 가능한 방식으로 비교한다.
+- profiler와 자동화는 백엔드 질문에 답하기 위한 보조 수단으로만 사용한다.
 - 공식 benchmark 결과와 보조 profiler 결과는 분리해서 관리한다.
 - 재현 가능성과 사람 검증 가능성을 자동화 편의보다 우선한다.
 - 실행하지 않은 결과를 `PASS`로 표현하지 않는다.
@@ -139,6 +141,7 @@ git --no-optional-locks status --short --branch
 - 완료 조건이 작업 도중 증가하면 새 Issue로 분리한다.
 - 직접 Evidence 없이 `PASS` 판정을 요구하면 중단한다.
 - 하나의 Issue가 둘 이상의 독립 결과를 포함하면 분리한다.
+- 공용 runner, fixture, schema, validator 또는 profiler harness 변경이 실험 질문 자체보다 커지면 중단하고 범위를 재검토한다.
 - 원인 분석보다 지원 도구 확장이 커지면 `BLOCKED`를 검토한다.
 - 문서 또는 Evidence 수가 증가해도 검증 가능성이 좋아지지 않으면 추가 생성을 중단한다.
 
@@ -158,7 +161,7 @@ git --no-optional-locks status --short --branch
 
 ### 1. 실험 질문 우선
 
-- 성능 테스트나 기술 검증을 시작하기 전에 검증하려는 질문을 한 문장으로 명확히 정의한다.
+- 작업을 시작할 때 답하려는 백엔드 질문을 한 문장으로 두고, 성능 테스트나 기술 검증 전에는 그 질문을 먼저 명확히 정의한다.
 - 모든 코드와 도구는 해당 질문에 직접 필요한지 검토한다.
 - 실험 질문과 직접 관계없는 기능은 애플리케이션 소스에 추가하지 않는 것을 기본 원칙으로 한다.
 
@@ -200,6 +203,7 @@ git --no-optional-locks status --short --branch
 - `M0` 범위에서는 Controller 또는 benchmark HTTP endpoint를 추가하지 않는다.
 - 후속 실험에서 실행 하네스용 endpoint가 필요하면 해당 Issue와 실험 프로토콜에 목적과 경계를 명시하고 별도 승인을 받은 경우에만 추가한다.
 - 명시 승인 없이 새 성능 실험, profiler smoke, 공식 benchmark를 실행하거나 공식 결과로 기록하지 않는다.
+- JFR, publication 또는 공용 profiler harness 확장은 명확한 필요와 별도 사람 승인이 있을 때만 진행한다.
 - license 선택 전에는 `LICENSE` 파일을 생성하지 않는다.
 - 명시 승인 없이 commit, push, remote 추가, GitHub repository 생성, PR 생성 또는 merge를 수행하지 않는다.
 - `.idea/` 파일은 stage하지 않는다.

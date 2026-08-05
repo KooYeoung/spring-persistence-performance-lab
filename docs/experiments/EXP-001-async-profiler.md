@@ -1,5 +1,9 @@
 # EXP-001 Async-profiler Phase B Protocol
 
+> 이 문서는 과거 EXP-001 Phase B JFR-first 설계와 실행 기록이다. 현재 기본 학습 경로가 아니라 선택적 고급 참고 경로이며, future experiment에 JFR이나 smoke 체계를 자동 적용하지 않는다.
+>
+> Post-fix Level 0 smoke는 당시 조건에서 `VERIFIED`였고, actual profile은 `NOT_APPLIED`, publication은 `NOT_CREATED`, Level 1/2는 `NOT_RUN` 상태로 보존한다.
+
 상태: Level 0 smoke `VERIFIED`, Actual profile `NOT_APPLIED`, publication `NOT_CREATED`.
 
 이 문서는 EXP-001 Phase B async-profiler evidence protocol이다. Phase A official timing result는 `docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md`가 계속 소유한다.
