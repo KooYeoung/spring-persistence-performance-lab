@@ -4,6 +4,14 @@ Spring Boot와 PostgreSQL에서 합성 데이터 기반 JPA `saveAll` 경로와 
 
 M0는 정합성만 검증한다. EXP-001 Phase A official benchmark는 `results/exp-001/20260727T053643Z-2d76b26`에 공개되어 있으며, Phase B profiler smoke와 actual profile은 별도 상태로 관리한다.
 
+## 기본 학습 흐름
+
+이 저장소는 작은 백엔드 질문을 빠르게 실험하고 결과와 해석을 누적하는 학습 저장소를 기본 방향으로 한다.
+
+기본 흐름: `질문 → 가설 → 작은 실험 → 정합성 확인 → profiler OFF 반복 측정 → 필요한 경우에만 병목 프로파일링 → 결과·한계·다음 질문 기록`
+
+Profiler는 선택적인 보조 도구이며 모든 실험에 필수는 아니다. 성능 수치는 profiler OFF 상태의 반복 측정으로 작성하고, 기존 Phase A official benchmark와 Phase B Level 0 smoke 상태는 변경하지 않는다.
+
 ## 현재 실험 상태
 
 - M0 정합성 검증: 합성 입력 저장 결과의 row count, key set, duplicate key, missing key, normalized snapshot, SHA-256 checksum을 검증한다.
