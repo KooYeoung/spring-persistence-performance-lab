@@ -73,7 +73,7 @@ Endpoint는 기본 profile과 운영 profile에서 등록되지 않는다. Contr
 
 Profiling facade는 Spring 안에서 실행되어 기존 persistence service를 Spring proxy를 통해 호출해야 한다. Facade 자체에 transactional persistence logic을 넣지 않는다.
 
-k6 기반 동시성 실험은 EXP-001에 포함하지 않고 별도 EXP-002에서 다룬다.
+k6 기반 동시성 실험은 EXP-001에 포함하지 않고 별도 후속 실험에서 다룬다.
 
 ## 측정 구간(Timing Boundary)
 
