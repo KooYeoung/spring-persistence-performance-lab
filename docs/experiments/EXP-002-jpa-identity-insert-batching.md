@@ -59,7 +59,10 @@ Focused integration test:
 실행:
 
 - branch: `experiment/jpa-identity-batching-observation`
-- source revision: `1d881d6ddaf25eaca509b9ebdf4a6350878b77b2`
+- production source revision: `1d881d6ddaf25eaca509b9ebdf4a6350878b77b2`
+- execution tree state: EXP-002 test and document were present as untracked working tree files
+- executed test file SHA-256: `e7bbfb8d0cc1419e75ae244b1504a84ab6795fbdd47e1da05eaeac94297e9465`
+- first experiment commit: `6f9d417b58245b0c30ac6cea6358c3aa810e53fb`
 - execution UTC: `2026-08-05T07:51:04Z`
 - compile command: `.\gradlew.bat --no-daemon compileTestJava`
 - compile native exit code: `0`
