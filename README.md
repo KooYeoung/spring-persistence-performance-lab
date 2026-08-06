@@ -19,6 +19,24 @@ Profiler는 선택적인 보조 도구이며 모든 실험에 필수는 아니�
 - EXP-001 Phase B profiler smoke: `VERIFIED`. post-fix Level 0 smoke에서 non-empty JFR와 collapsed output 생성이 확인되었다.
 - Actual profile: `NOT_APPLIED`. Publication은 `NOT_CREATED`이며 Phase B 상세 상태는 [EXP-001 Async-profiler Phase B Protocol](docs/experiments/EXP-001-async-profiler.md)이 소유한다.
 
+### ID 생성 방식과 INSERT batching 관찰
+
+EXP-002~004는 `hibernate.jdbc.batch_size=5`와 5건 저장 조건에서 ID 생성 방식과 INSERT batching 관찰값을 비교한다. 자세한 실행 조건과 evidence는 각 실험 문서가 소유한다.
+
+| 조건 | sequence 조회 | JDBC batch |
+|---|---:|---:|
+| production `IDENTITY`, batch size 5, 5건 | 해당 없음 | 0회 |
+| test-only `SEQUENCE`, `allocationSize=1`, 5건 | `nextval` 5회 | 1회 |
+| test-only `SEQUENCE`, `allocationSize=5`, 5건 | `nextval` 2회 | 1회 |
+
+현재 조건에서는 `saveAll()`과 batch size 설정만으로 JDBC INSERT batching이 보장되지 않았다. `allocationSize`는 sequence 기반 ID를 미리 확보하는 단위이고, `hibernate.jdbc.batch_size`는 INSERT를 묶는 설정이므로 역할이 다르다.
+
+세 실험 모두 저장 건수, key 및 저장 필드 정합성을 확인했다. `allocationSize=5`의 `nextval` 2회는 현재 Hibernate/Testcontainers runtime 관찰값이며 모든 환경의 고정 규칙으로 확정하지 않는다.
+
+production `BenchmarkRecord`는 계속 `IDENTITY`를 사용하며 production schema/config를 변경하지 않았다. 이번 결과는 5건 focused test의 동작 관찰이며 production 성능 향상이나 50,000건 benchmark 결과로 일반화하지 않는다.
+
+상세 기록: [EXP-002](docs/experiments/EXP-002-jpa-identity-insert-batching.md), [EXP-003](docs/experiments/EXP-003-jpa-sequence-insert-batching.md), [EXP-004](docs/experiments/EXP-004-jpa-sequence-allocation-size.md)
+
 ## 기술 스택
 
 - Java 21
