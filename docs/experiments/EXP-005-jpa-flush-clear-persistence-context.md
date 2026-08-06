@@ -65,6 +65,24 @@
 
 첫 focused runtime 실행은 save 동작까지 도달하지 못했다. 원인은 새 테스트가 application root package의 기본 entity scan을 사용하면서 EXP-003 test-only nested entity `SequenceBatchRecord`까지 함께 스캔했고, 현재 context에는 `sequence_batch_record` schema가 없어 Hibernate `validate`가 중단한 것이다. 수정 후 새 테스트는 `@EntityScan(basePackageClasses = BenchmarkRecord.class)`로 production `BenchmarkRecord`만 entity scan 대상에 포함한다.
 
+### PR head 재확인
+
+목적은 committed test source와 runtime PASS의 identity를 연결하는 것이다. 이 재확인은 문서 correction commit 전 PR head에서 수행했고, 이후 correction commit은 EXP-005 문서만 변경하며 test source는 변경하지 않는다.
+
+- run identity: PR head `0657e968a89707dfe05b7c3e7a1f42bca9b58ac0`
+- test source: `src/test/java/com/example/persistencebenchmark/JpaFlushClearPersistenceContextIntegrationTest.java`
+- test source SHA-256: `2C5A3BE3C89F78EAD5E4961ED6C4A5CAE63892F539CA8AA547BA94448C89A847`
+- command: `.\gradlew.bat --no-daemon test --rerun-tasks --tests "com.example.persistencebenchmark.JpaFlushClearPersistenceContextIntegrationTest"`
+- started at UTC: `2026-08-06T10:05:23.0146287Z`
+- ended at UTC: `2026-08-06T10:05:43.7472181Z`
+- native exit code: `0`
+- XML result: tests `1`, failures `0`, errors `0`, skipped `0`
+- re-confirmed lifecycle assertions: after `persist()` `true`, after `flush()` `true`, after `clear()` `false`, processed count `1`
+- re-confirmed consistency assertion: commit 후 `ConsistencyReport.hasFailures()` `false`
+- source identity after run: test source SHA-256 unchanged
+
+`contains()` 값은 XML에 직접 출력된 값이 아니라 committed test source의 exact assertion으로 확인한다. XML은 이번 focused test 실행이 PASS였다는 local ignored runtime artifact이며 tracked publication artifact로 다루지 않는다.
+
 Focused integration test 관찰값:
 
 - processed command count: `1`
