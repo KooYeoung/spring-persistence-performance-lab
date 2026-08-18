@@ -39,13 +39,14 @@ production `BenchmarkRecord`는 계속 `IDENTITY`를 사용하며 production sch
 
 ### Persistence context lifecycle 관찰
 
-EXP-005~007은 ID 생성 방식이나 JDBC batching이 아니라 같은 transaction에서 entity instance가 persistence context와 어떤 관계를 갖는지 확인한다. 자세한 실행 조건과 evidence는 각 실험 문서가 소유한다.
+EXP-005~008은 ID 생성 방식이나 JDBC batching이 아니라 같은 transaction에서 entity instance가 persistence context와 어떤 관계를 갖는지 확인한다. 자세한 실행 조건과 evidence는 각 실험 문서가 소유한다.
 
 - [EXP-005](docs/experiments/EXP-005-jpa-flush-clear-persistence-context.md): `persist()` 직후 original entity는 managed 상태였고, `flush()` 후에도 managed 상태를 유지했으며, `clear()` 후 detached 상태가 되었다.
 - [EXP-006](docs/experiments/EXP-006-jpa-clear-find-instance-identity.md): `clear()` 후 original은 detached 상태로 남고, 같은 ID로 `find()`한 reloaded는 managed 상태였다. original과 reloaded는 서로 다른 Java object지만 ID와 저장 필드 기준으로 같은 database row를 나타냈다.
 - [EXP-007](docs/experiments/EXP-007-jpa-detach-clear-scope.md): 연관관계가 없는 두 `BenchmarkRecord`에서 `detach(first)`는 first만 detached 상태로 만들고 second는 managed 상태로 유지했으며, 이후 `clear()`는 second도 detached 상태로 만들었다.
+- [EXP-008](docs/experiments/EXP-008-jpa-merge-detached-instance-identity.md): `clear()` 후 detached original을 `merge()`에 전달했을 때 original은 detached 상태로 남고 반환 instance만 managed였습니다. 두 Java object는 다르지만 ID와 저장 필드 기준으로 같은 database row를 나타냈습니다.
 
-세 실험 모두 transaction commit 후 저장 건수, key 및 저장 필드 정합성을 확인했다. 이 결과는 SQL 실행 시점, cache hit, memory 사용량, chunk 처리 성능 또는 production service 변경 필요성을 판정하지 않는다.
+네 실험 모두 transaction commit 후 저장 건수, key 및 저장 필드 정합성을 확인했다. 이 결과는 SQL 실행 시점, cache hit, memory 사용량, chunk 처리 성능 또는 production service 변경 필요성을 판정하지 않는다.
 
 ## 기술 스택
 
