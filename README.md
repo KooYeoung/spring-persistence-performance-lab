@@ -15,7 +15,7 @@ Profiler는 선택적인 보조 도구이며 모든 실험에 필수는 아니�
 ## 현재 실험 상태
 
 - M0 정합성 검증: 합성 입력 저장 결과의 row count, key set, duplicate key, missing key, normalized snapshot, SHA-256 checksum을 검증한다.
-- EXP-001 Phase A official benchmark: `VERIFIED`. official JSON 12개, warm-up JSON 2개, 총 16개 파일이 `results/exp-001/20260727T053643Z-2d76b26`에 있다.
+- [EXP-001 Phase A official benchmark](docs/experiments/EXP-001-jpa-saveall-vs-jdbc-batch.md): `VERIFIED`. official JSON 12개, warm-up JSON 2개, 총 16개 파일이 `results/exp-001/20260727T053643Z-2d76b26`에 있다.
 - EXP-001 Phase B profiler smoke: `VERIFIED`. post-fix Level 0 smoke에서 non-empty JFR와 collapsed output 생성이 확인되었다.
 - Actual profile: `NOT_APPLIED`. Publication은 `NOT_CREATED`이며 Phase B 상세 상태는 [EXP-001 Async-profiler Phase B Protocol](docs/experiments/EXP-001-async-profiler.md)이 소유한다.
 
