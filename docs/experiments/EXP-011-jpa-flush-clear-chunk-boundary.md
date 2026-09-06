@@ -77,9 +77,9 @@ Commit 이후 기존 `verifyExpected(commands)`로 row count `4`, key/checksum�
 
 | 경계 | A/B | C/D |
 |---|---|---|
-| Chunk 1 persist 후 | managed | not created |
-| 첫 flush 후 | managed | not created |
-| 첫 clear 후 | detached | not created |
+| Chunk 1 persist 후 | managed | transient |
+| 첫 flush 후 | managed | transient |
+| 첫 clear 후 | detached | transient |
 | Chunk 2 persist 후 | detached | managed |
 | 두 번째 flush 후 | detached | managed |
 | 두 번째 clear 후 | detached | detached |
