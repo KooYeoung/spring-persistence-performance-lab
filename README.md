@@ -50,7 +50,7 @@ EXP-005~012는 ID 생성 방식이나 JDBC batching이 아니라 같은 transact
 - [EXP-011](docs/experiments/EXP-011-jpa-flush-clear-chunk-boundary.md): 두 chunk에서 각 `flush()` 후 현재 chunk entity는 managed 상태를 유지했고, `clear()` 후 persistence context의 entity는 detached 상태가 되었다. 네 row는 transaction commit 후 모두 확인되었다.
 - [EXP-012](docs/experiments/EXP-012-jpa-flush-clear-chunk-failure-transaction.md): 두 번째 chunk의 명시적 `flush()`에서 unique constraint violation이 발생했을 때, 단일 transaction에서는 A/B/C/D가 모두 rollback되었고 chunk별 transaction에서는 첫 chunk의 A/B만 보존되었다.
 
-여덟 실험 모두 transaction commit 후 저장 건수, key 및 저장 필드 정합성을 확인했다. 이 결과는 SQL 실행 시점, cache hit, memory 사용량, chunk 처리 성능 또는 production service 변경 필요성을 판정하지 않는다.
+여덟 실험 모두 write transaction 종료 후 별도 transaction에서 최종 database state의 저장 건수, key 및 저장 필드 정합성을 검증해 lifecycle 관찰과 저장 결과를 분리했다. 이 결과는 SQL 실행 시점, cache hit, memory 사용량, chunk 처리 성능 또는 production service 변경 필요성을 판정하지 않는다.
 
 ## 기술 스택
 
