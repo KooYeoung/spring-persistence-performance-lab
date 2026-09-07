@@ -39,7 +39,7 @@ production `BenchmarkRecord`는 계속 `IDENTITY`를 사용하며 production sch
 
 ### Persistence context lifecycle 관찰
 
-EXP-005~012는 ID 생성 방식이나 JDBC batching이 아니라 같은 transaction에서 entity instance가 persistence context와 어떤 관계를 갖는지 확인한다. 자세한 실행 조건과 evidence는 각 실험 문서가 소유한다.
+EXP-005~012는 ID 생성 방식이나 JDBC batching이 아니라 각 실험에서 정의한 transaction 경계를 기준으로 entity instance가 persistence context와 어떤 관계를 갖는지 확인한다. 자세한 실행 조건과 evidence는 각 실험 문서가 소유한다.
 
 - [EXP-005](docs/experiments/EXP-005-jpa-flush-clear-persistence-context.md): `persist()` 직후 original entity는 managed 상태였고, `flush()` 후에도 managed 상태를 유지했으며, `clear()` 후 detached 상태가 되었다.
 - [EXP-006](docs/experiments/EXP-006-jpa-clear-find-instance-identity.md): `clear()` 후 original은 detached 상태로 남고, 같은 ID로 `find()`한 reloaded는 managed 상태였다. original과 reloaded는 서로 다른 Java object지만 ID와 저장 필드 기준으로 같은 database row를 나타냈다.
