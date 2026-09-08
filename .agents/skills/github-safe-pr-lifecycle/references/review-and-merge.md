@@ -2,7 +2,7 @@
 
 ## Publication gate
 
-Push 전에 branch, base parent, local head, clean 상태, upstream, remote branch와 target-head PR을 확인한다. Push 성공 여부가 불명확하면 동일 push를 반복하기 전에 read-only ref identity를 확인한다.
+Push 승인은 승인·검증된 publication identity만 외부에 게시할 권한이다. Push 직전에 current branch와 target remote/ref, full local head, 승인된 commit 또는 base-to-head range, committed file scope와 작업에 필요한 content identity가 그 publication identity와 일치하는지 확인한다. Clean worktree는 보조 조건이며 committed scope 검증을 대체하지 않는다. 검증 강도는 작업 위험과 승인된 Evidence에 비례시키되, 고정 SHA workflow에서는 exact full SHA를 확인하고 새 commit workflow에서는 commit 검증 후 actual full SHA를 publication identity로 고정하며 multi-commit workflow에서는 승인된 base-to-head range를 확인한다. 필수 identity를 확정할 수 없거나 달라졌다면 임의의 수정·재구성·추가 commit 없이 push를 중단하고 새 승인 또는 triage로 넘긴다. Task에 해당하면 upstream, existing remote branch와 target-head PR 상태도 함께 확인한다. Push 성공 여부가 불명확하면 동일 push를 반복하기 전에 read-only ref identity를 확인하고, 성공 후 local/upstream/remote-tracking과 remote head identity를 별도로 검증한다.
 
 PR 생성 전 title, base, head와 body를 메모리에서 확정한다. Body 비교는 expected와 actual에 같은 CRLF-to-LF 및 trailing-newline 정책을 적용한다. 원문이나 전체 Base64 대신 character count, UTF-8 byte count, SHA-256과 Base64 length를 기록한다.
 
