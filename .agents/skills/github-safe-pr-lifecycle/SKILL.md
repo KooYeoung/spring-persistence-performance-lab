@@ -36,7 +36,7 @@ GitHub PR의 identity와 승인 경계를 보존하면서 publication부터 clea
 10. remote branch deletion
 11. local branch deletion
 
-한 operation의 승인은 다른 operation의 mutation 권한을 자동으로 부여하지 않는다. 같은 CLI를 사용하더라도 direct merge, auto-merge 상태 변경과 merge-queue 등록·제거는 서로 다른 GitHub state transition이므로 기존 승인을 재사용하지 않는다. 현재 요청에서 승인된 operation만 적용한다.
+한 operation의 승인은 다른 명시적 operation이나 repository configuration이 유발하는 별도 state transition의 mutation 권한을 자동으로 부여하지 않는다. 같은 CLI invocation이나 configured side effect가 승인 경계를 넘을 수 있으면 mutation 전에 예상 state transition을 확인해 사용자에게 고지하고 필요한 별도 승인을 확인하며, 현재 요청에 포함되지 않으면 중단한다.
 
 ## 안전 불변식
 

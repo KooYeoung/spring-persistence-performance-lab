@@ -21,16 +21,9 @@ PR 생성 후 state, draft, title, body, base/head full SHA, commits, changed fi
 
 ## Finding 분류
 
-Repository의 review classification인 `BLOCKING`, `REQUIRED_SUPPORT`, `NON_BLOCKING`, `OUT_OF_SCOPE`는 `AGENTS.md`의 정의와 우선순위를 그대로 따른다. 분석할 때는 다음 축을 서로 섞지 않고 함께 기록한다.
+Finding 분류는 repository의 authoritative `$change-scope-triage`와 `AGENTS.md` taxonomy를 값의 누락이나 재분류 없이 따른다. Validity, scope, review classification 또는 support, merge impact와 disposition을 서로 독립된 축으로 기록하며, 이 reference의 일부 예시를 exhaustive enum으로 사용하지 않는다.
 
-- validity: `VERIFIED`, `PARTIAL`, `INVALID`, `UNVERIFIED`
-- scope/support: `CURRENT_SCOPE_REQUIRED`, `REQUIRED_SUPPORT`, `OUT_OF_SCOPE`
-- merge impact: `BLOCKING`, `NON_BLOCKING`
-- disposition: source correction, reply and resolve, defer to post-merge maintenance, manual triage
-
-`REQUIRED_SUPPORT`를 `BLOCKING` 또는 `NON_BLOCKING`으로 덮어쓰지 않는다. 위 분석 축은 repository의 review classification을 대체하거나 새 taxonomy를 만들기 위한 것이 아니다.
-
-Validity는 필요한 Evidence가 확인되면 `VERIFIED`, 일부만 확인되면 `PARTIAL`, finding이 실제 상태와 맞지 않으면 `INVALID`, 판단할 Evidence가 확보되지 않으면 `UNVERIFIED`로 기록한다. `PARTIAL`은 미확정 범위를 그대로 보존한다. 그 범위가 현재 mutation의 필수 gate이면 차단하고, 보조 snapshot에만 해당하면 다른 gate를 독립적으로 판정한다. `PARTIAL`을 `VERIFIED`로 승격하거나 누락하지 않는다.
+Evidence가 일부만 확인된 상태는 authoritative `PARTIAL`로 보존한다. 미확정 범위가 현재 mutation의 필수 gate이면 차단하고, 보조 snapshot에만 해당하면 다른 gate를 독립적으로 판정한다. `PARTIAL`을 확정 상태로 승격하거나 누락하지 않으며, `REQUIRED_SUPPORT`를 scope나 merge impact로 재분류하지 않는다.
 
 Unresolved 상태나 severity 이름만으로 blocking을 결정하지 않는다. 현재 head의 사실성, 정합성, 보안 또는 완료 조건을 실제로 무효화하는지 판단한다. Formal `CHANGES_REQUESTED`가 없어도 verified current-scope finding은 blocking일 수 있다.
 
@@ -43,6 +36,8 @@ Finding correction은 source push, inline reply와 exact thread resolve를 각�
 - Required protection이나 ruleset이 없으면 외부 queued 또는 conclusion 없는 suite를 자동 blocker로 취급하지 않는다.
 - Required review, check 또는 ruleset이 있으면 충족 여부를 별도로 판정한다.
 - Merge mutation 전에 base branch protection과 ruleset에서 required merge queue 존재 여부와 queue가 허용하는 merge method를 확인한다. 이 projection이 `PARTIAL`, `UNVERIFIED`, unknown이거나 서로 모순되면 merge 관련 mutation을 차단한다.
+- Direct merge 또는 eventual terminal merge를 예약하는 auto-merge·merge-queue mutation 전에 repository의 automatic head-branch deletion 설정, PR head repository ownership, source branch preservation 요구와 deletion side effect의 명시적 승인 여부를 확인한다. Same-repository head에서 automatic deletion이 활성화됐고 source 보존이 필요하거나 side effect가 승인되지 않았다면 해당 mutation을 차단한다. 보존 요구가 없고 configured deletion이 명시적으로 승인됐다면 다른 gate 통과를 전제로 진행할 수 있다. Fork-owned head에는 base repository 설정이 동일하게 적용된다고 추정하지 않고 ownership과 적용 범위를 확인한다.
+- Automatic deletion은 operator가 실행한 explicit remote-delete command와 구분되는 configured merge side effect로 기록한다. Terminal merge 후 remote ref가 이미 없다면 cleanup에서 `NO_CHANGE_REQUIRED`로 처리하고 ref를 재생성하지 않는다. Cleanup reference의 explicit expected-SHA lease는 operator가 remote deletion을 직접 수행할 때만 적용한다.
 
 ## Mergeability와 merge
 
@@ -64,6 +59,6 @@ Auto-merge 상태 변경, merge-queue enrollment·removal, admin bypass, 다른 
 
 ## Post-merge verification
 
-Merge 직후 PR state, merged time와 merge SHA를 확인하고 merge commit의 parent, subject, changed files, stats와 content blobs를 검증한다. Original base/head, body와 review/thread snapshot, source branch 보존도 확인한다.
+Merge 직후 PR state, merged time와 merge SHA를 확인하고 merge commit의 parent, subject, changed files, stats와 content blobs를 검증한다. Original base/head, body와 review/thread snapshot, 승인된 preservation/deletion outcome과 실제 source-ref 상태도 확인한다.
 
 Terminal `MERGED` 상태에서 mergeability가 `UNKNOWN`으로 보이는 것은 pre-merge gate의 확정된 Evidence와 구분한다. Post-verification 실패가 있어도 merge를 자동으로 되돌리거나 보정하지 않는다.
