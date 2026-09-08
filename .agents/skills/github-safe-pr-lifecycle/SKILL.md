@@ -24,13 +24,17 @@ GitHub PR의 identity와 승인 경계를 보존하면서 publication부터 clea
 
 다음을 서로 독립적인 mutation 경계로 취급한다.
 
-1. push와 PR 생성
-2. review reply와 thread resolve
-3. PR merge
-4. local main sync
-5. worktree와 source branch cleanup
+1. branch push
+2. PR creation
+3. review reply
+4. review thread resolve
+5. PR merge
+6. local main synchronization
+7. worktree removal
+8. remote branch deletion
+9. local branch deletion
 
-앞 단계 승인은 다음 단계 mutation 권한을 자동으로 부여하지 않는다.
+한 operation의 승인은 다른 operation의 mutation 권한을 자동으로 부여하지 않는다. 현재 요청에서 승인된 operation만 적용한다.
 
 ## 안전 불변식
 
