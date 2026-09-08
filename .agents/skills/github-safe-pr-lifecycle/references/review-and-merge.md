@@ -42,6 +42,7 @@ Finding correction은 source push, inline reply와 exact thread resolve를 각�
 - Head check runs, check suites, legacy commit status, base branch protection, required contexts/checks와 repository rulesets을 각각 확인한다.
 - Required protection이나 ruleset이 없으면 외부 queued 또는 conclusion 없는 suite를 자동 blocker로 취급하지 않는다.
 - Required review, check 또는 ruleset이 있으면 충족 여부를 별도로 판정한다.
+- Merge mutation 전에 base branch protection과 ruleset에서 required merge queue 존재 여부와 queue가 허용하는 merge method를 확인한다. 이 projection이 `PARTIAL`, `UNVERIFIED`, unknown이거나 서로 모순되면 merge 관련 mutation을 차단한다.
 
 ## Mergeability와 merge
 
@@ -51,9 +52,15 @@ REST `clean`과 GraphQL `CLEAN`은 merge-state gate를 통과한다. REST `unsta
 
 `UNSTABLE` 원인이 불명확하거나 required condition과 관련되면 차단한다. REST와 GraphQL projection이 다르면 required/optional check Evidence로 차이를 설명할 수 있어야 하며, 원인을 확정할 수 없으면 차단한다. REST `null` 또는 unknown, GraphQL `UNKNOWN`, conflict, required update나 다른 필수 조건 미확정, pagination, pending review summary 또는 identity mismatch가 있으면 merge하지 않는다. Base update 직후 recalculation 가능성은 별도 승인된 fresh recovery에서만 다시 확인한다.
 
-Merge 직전에 current PR head가 승인된 expected full SHA와 일치해야 한다. Merge command 또는 API가 expected-head guard를 지원하면 반드시 사용한다. Guard를 사용할 수 없거나 expected SHA를 확정할 수 없으면 merge하지 않는다. 다른 merge endpoint나 보호되지 않은 fallback으로 우회하지 않는다. 새 head가 생기면 기존 승인을 재사용하지 않고 review와 readiness를 fresh 확인한다.
+Merge 직전에 current PR head가 승인된 expected full SHA와 일치해야 한다. Merge command 또는 API가 expected-head guard를 지원하면 반드시 사용한다. Guard를 사용할 수 없거나 expected SHA를 확정할 수 없으면 direct merge와 merge-queue enrollment를 모두 차단한다. 다른 merge endpoint나 보호되지 않은 fallback으로 우회하지 않는다. 새 head가 생기면 기존 승인을 재사용하지 않고 review와 readiness를 fresh 확인한다.
 
-Auto, admin, 다른 merge method, branch deletion과 retry는 별도 승인이 없으면 추가하지 않는다.
+Required merge queue가 없을 때만 승인된 merge method와 expected-head guard를 결합한 direct merge 흐름을 사용한다. Queue가 required이면 required checks 통과 후 queue enrollment가, checks pending 중에는 auto-merge enablement가 발생할 수 있음을 구분하며, direct merge·queue enrollment·auto-merge enablement는 각각 별도 승인을 요구한다. Queue가 정한 merge method가 승인된 의도와 다르거나 불명확하면 enqueue하지 않는다.
+
+Queue 또는 auto-merge command 성공을 merge 완료로 간주하지 않는다. 성공 직후 PR state를 fresh 확인해 `queued`, `auto-merge pending`, `merged`, `rejected` 또는 `removed`로 구분하고, `queued`나 `auto-merge pending`을 `merged`로 기록하지 않는다. Terminal `MERGED`가 확인되기 전에는 merge commit, main update, content identity나 cleanup을 post-merge 완료로 판정하지 않는다.
+
+Queue 대기, polling, terminal merge 확인, local main synchronization과 cleanup은 각각 별도 승인 범위다. `--admin`은 branch protection과 merge queue를 우회하는 별도 고위험 mutation이며 fallback으로 사용하지 않는다. Queue가 required가 아니면 기존 direct-merge 흐름을 유지한다.
+
+Auto-merge 상태 변경, merge-queue enrollment·removal, admin bypass, 다른 merge method, branch deletion과 retry는 별도 승인이 없으면 추가하지 않는다.
 
 ## Post-merge verification
 

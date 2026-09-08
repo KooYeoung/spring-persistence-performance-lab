@@ -28,13 +28,15 @@ GitHub PR의 identity와 승인 경계를 보존하면서 publication부터 clea
 2. PR creation
 3. review reply
 4. review thread resolve
-5. PR merge
-6. local main synchronization
-7. worktree removal
-8. remote branch deletion
-9. local branch deletion
+5. direct PR merge
+6. auto-merge enablement or disablement
+7. merge-queue enrollment or removal
+8. local main synchronization
+9. worktree removal
+10. remote branch deletion
+11. local branch deletion
 
-한 operation의 승인은 다른 operation의 mutation 권한을 자동으로 부여하지 않는다. 현재 요청에서 승인된 operation만 적용한다.
+한 operation의 승인은 다른 operation의 mutation 권한을 자동으로 부여하지 않는다. 같은 CLI를 사용하더라도 direct merge, auto-merge 상태 변경과 merge-queue 등록·제거는 서로 다른 GitHub state transition이므로 기존 승인을 재사용하지 않는다. 현재 요청에서 승인된 operation만 적용한다.
 
 ## 안전 불변식
 
