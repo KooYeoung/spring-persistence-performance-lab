@@ -13,7 +13,11 @@ PR 생성 후 state, draft, title, body, base/head full SHA, commits, changed fi
 - REST는 PR identity, files, commits, submitted reviews, inline comments, conversation comments, check runs, suites, legacy status와 branch protection을 확인하는 데 사용한다.
 - GraphQL은 canonical review threads, reply 관계, `isResolved`, `isOutdated`, review decision, mergeable, merge state와 pagination을 함께 확인하는 데 사용한다.
 - Raw authenticated response나 불필요한 body를 로그에 남기지 않고 최소 projection을 사용한다.
-- 모든 connection의 `hasNextPage`를 확인한다. `true`이면 조회되지 않은 finding이 없다고 가정하지 않는다.
+- Identity, review, finding, check·rule과 open-work 판정에 사용하는 REST collection은 `Link` pagination을 끝까지 따르거나 `gh api --paginate`와 동등한 방법으로 모든 page를 수집한다. 첫 page나 `per_page` 최대값만으로 전체 결과라고 가정하지 않는다.
+- REST가 여러 JSON page를 반환하면 `--slurp` 또는 동등한 aggregation을 사용하고 실제 response shape에 맞게 flatten한 뒤 count와 classification을 수행한다. 수집한 page 수와 completeness를 기록한다.
+- 필수 gate의 REST pagination 또는 aggregation이 실패하면 미확정 범위를 `PARTIAL` 또는 `UNVERIFIED`로 보존하고 해당 mutation을 차단한다. 보조 snapshot만 불완전하면 그 범위를 보존하고 다른 gate를 독립적으로 판정한다.
+- 단일 resource endpoint에는 pagination을 요구하지 않는다.
+- GraphQL collection은 `pageInfo.hasNextPage`와 `endCursor`로 모든 page를 소진한다. Pagination이 남아 있으면 조회되지 않은 finding이 없다고 가정하지 않는다.
 
 ## Finding 분류
 

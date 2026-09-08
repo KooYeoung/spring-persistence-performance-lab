@@ -42,14 +42,22 @@ Cleanup 전 다음을 확인한다.
 - Source path가 main root가 아니고 main 내부도 아닌지 여부
 - Open work, tags, locks와 unrelated refs/worktrees
 
+Cleanup gate에서 remote source ref의 expected full SHA를 확정하고 삭제 직전에 remote tip을 다시 확인한다. Read-then-delete 확인만으로 안전하다고 판정하지 않으며, 삭제 요청 자체에 다음과 동등한 explicit lease를 적용한다.
+
+`git push --force-with-lease=refs/heads/<branch>:<expected-full-sha> origin :refs/heads/<branch>`
+
+Implicit remote-tracking state에 의존하는 lease는 사용하지 않는다. Remote tip이 expected SHA와 다르거나 lease가 거부되면 즉시 중단한다. Remote ref가 이미 없다면 `NO_CHANGE_REQUIRED` 또는 동등한 no-op으로 기록하고 ref를 재생성하지 않는다. 이 explicit lease는 승인된 branch deletion의 compare-and-delete 보호 수단일 뿐 history rewrite 권한이 아니다.
+
 승인된 경우 다음 순서로 진행한다.
 
 1. Force 없이 source worktree를 제거하고 registration과 physical path 부재를 확인한다.
-2. Expected source tip을 다시 확인하고 remote branch를 삭제한다.
+2. Expected source tip에 고정된 explicit lease로 remote branch를 삭제한다.
 3. Remote head와 remote-tracking ref 부재를 확인한다.
 4. 그 뒤에만 local source branch를 삭제한다.
 
-한 단계가 실패하면 다음 destructive target으로 진행하지 않는다. Force removal, force push, manual ref deletion, prune, reset 또는 backup ref 생성으로 자동 복구하지 않는다. Backup ref를 만들지 않았다면 삭제된 source commit의 장기 복구 가능성을 보장하지 않는다고 기록한다.
+Remote branch deletion과 local branch deletion은 서로 독립적인 mutation 승인 경계로 유지한다. 성공 후 `git ls-remote`, GitHub ref와 remote-tracking ref의 부재를 확인한 뒤에만 local branch deletion으로 진행한다.
+
+한 단계가 실패하면 다음 destructive target으로 진행하지 않는다. Unconditional `git push origin --delete <branch>`, `--force`, `+refspec`, GitHub API delete fallback, retry, force removal, manual ref deletion, prune, reset 또는 backup ref 생성으로 우회하지 않는다. Backup ref를 만들지 않았다면 삭제된 source commit의 장기 복구 가능성을 보장하지 않는다고 기록한다.
 
 ## 실행과 mutation 기록
 
