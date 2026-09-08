@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Safe PR Lifecycle"
+  short_description: "GitHub PR 게시·검토·merge·cleanup을 안전하게 수행"
+  default_prompt: "Use $github-safe-pr-lifecycle to safely publish, review, merge, and clean up a GitHub pull request."
