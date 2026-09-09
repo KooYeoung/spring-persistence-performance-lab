@@ -47,6 +47,15 @@ This repository is a public Spring Boot persistence benchmark lab.
 - Issue: 이번 작업에서 무엇을 완료하는가.
 - `AGENTS.md`에는 긴 PowerShell 명령, 특정 Issue 또는 PR 번호, 일회성 commit SHA, 특정 runtime artifact 경로를 넣지 않는다.
 
+## 재사용 가능한 작업 수명주기
+
+- 현재 OS와 shell에서 repository root와 동등한 명령을 다시 확인하고, 이전 환경의 절대 경로를 현재 작업에 고정하지 않는다.
+- tool invocation, native command execution과 실제 repository 또는 GitHub mutation을 구분해 기록한다.
+- tool-level 실패가 실제 write를 만들지 않았는지 확인한 뒤 recovery 또는 재시도 승인 필요성을 판단한다.
+- 변경의 semantic correctness와 exact changed-file scope를 우선하며 hunk 수를 일반적인 품질 gate로 사용하지 않는다.
+- PR 번호, commit SHA, 절대 path, 실행 횟수와 일회성 결과 코드는 `AGENTS.md` 또는 재사용 skill의 영구 규칙으로 기록하지 않는다.
+- JPA/Hibernate focused 실험에는 `$persistence-experiment-lifecycle`을 사용하고, GitHub publication·review·merge·cleanup에는 `$github-safe-pr-lifecycle`을 사용한다.
+
 ## Common Commands
 
 ### repo-preflight
