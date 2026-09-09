@@ -1,0 +1,4 @@
+interface:
+  display_name: "Persistence Experiment Lifecycle"
+  short_description: "JPA persistence 실험을 설계하고 검증"
+  default_prompt: "Use $persistence-experiment-lifecycle to design and validate a focused JPA persistence experiment."
