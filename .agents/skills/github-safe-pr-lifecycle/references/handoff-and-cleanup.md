@@ -69,11 +69,19 @@ Implicit remote-tracking state에 의존하는 lease는 사용하지 않는다. 
      refs/heads/<branch>
    ```
 
-4. 그 뒤에만 local source branch를 삭제한다.
+4. 그 뒤에 local deletion identity를 fully qualified ref `refs/heads/<branch>`와 `<expected-full-sha>`로 고정하고, 다른 registered worktree가 해당 ref를 checkout하고 있지 않은지 확인한다. 삭제 직전에 ref의 current tip을 다시 읽으며, ref가 이미 없다면 `NO_CHANGE_REQUIRED`로 기록하고 재생성하지 않는다. Ref가 존재하면 current tip이 expected full SHA와 정확히 일치할 때만 다음과 동등한 old-value guarded deletion을 수행한다.
+
+   ```sh
+   git update-ref -d \
+     refs/heads/<branch> \
+     <expected-full-sha>
+   ```
+
+   두 번째 인자는 삭제할 ref의 old-value guard다. 사전 확인 이후 ref가 이동하면 삭제가 실패해야 한다. Tip 불일치, ref identity 불명확 또는 guard 실패 시 expected SHA를 바꾸거나 다른 강제 삭제로 우회하지 않고 중단한다. 성공 후 fully qualified local ref의 부재를 확인한다.
 
 Remote branch deletion과 local branch deletion은 서로 독립적인 mutation 승인 경계로 유지한다. 성공 후 같은 resolved remote를 사용한 `git ls-remote`, GitHub ref와 해당 remote namespace의 remote-tracking ref 부재를 확인한 뒤에만 local branch deletion으로 진행한다.
 
-한 단계가 실패하면 다음 destructive target으로 진행하지 않는다. Unconditional `git push <verified-source-remote> --delete <branch>`, `--force`, `+refspec`, GitHub API delete fallback, retry, force removal, manual ref deletion, prune, reset 또는 backup ref 생성으로 우회하지 않는다. Backup ref를 만들지 않았다면 삭제된 source commit의 장기 복구 가능성을 보장하지 않는다고 기록한다.
+한 단계가 실패하면 다음 destructive target으로 진행하지 않는다. Unconditional `git push <verified-source-remote> --delete <branch>`, `--force`, `+refspec`, GitHub API delete fallback, retry, force removal, `git branch -D <branch>`, old-value guard 없는 local ref deletion, prune, reset 또는 backup ref 생성으로 우회하지 않는다. Backup ref를 만들지 않았다면 삭제된 source commit의 장기 복구 가능성을 보장하지 않는다고 기록한다.
 
 ## 실행과 mutation 기록
 
